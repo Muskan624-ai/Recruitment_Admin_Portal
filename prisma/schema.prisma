@@ -1,0 +1,51 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+// This defines your Admins (Root and Domain Heads)
+model Admin {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  name      String
+  registrationNumber String  @unique
+  email     String   @unique
+  password  String   // We will encrypt this later
+  role      Role     @default(DOMAIN_HEAD)
+  domain    Domain?  // Optional: Root admins don't need a specific domain
+}
+
+// This defines the Applicants submitting the frontend form
+model Applicant {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  name            String
+  registrationNumber String  @unique
+  email           String   @unique
+  phone           String
+  appliedDomain   Domain
+  status          Status   @default(REVIEW_1_PENDING) 
+  responses       String[]
+}
+
+enum Role {
+  ROOT_ADMIN
+  DOMAIN_HEAD
+}
+
+enum Domain {
+  TECHNICAL
+  MANAGEMENT
+  DESIGN
+  EDITORIAL
+  R_AND_D
+  MARKETING
+}
+
+enum Status {
+  REVIEW_1_PENDING
+  REVIEW_2_PENDING
+  ACCEPTED
+}
