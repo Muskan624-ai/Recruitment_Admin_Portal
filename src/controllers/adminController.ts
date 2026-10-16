@@ -94,3 +94,48 @@ export const getMySchedule = async (req: Request, res: Response) => {
     return res.status(500).json({ success: false, message: 'Server error fetching schedule' });
   }
 };
+
+// 6. Assign Domain Heads (Root Admin Only)
+export const assignDomainHead = async (req: Request, res: Response) => {
+  try {
+    const { emails, domainId } = req.body; 
+
+    // 1. Basic validation
+    if (!emails || !Array.isArray(emails) || emails.length === 0) {
+      return res.status(400).json({ success: false, message: 'Please provide an array of emails.' });
+    }
+
+    // 2. Prevent crashes by checking if any of these emails already exist in the database
+    const existingAdmins = await prisma.admin.findMany({
+      where: { email: { in: emails } }
+    });
+
+    if (existingAdmins.length > 0) {
+      const duplicateEmails = existingAdmins.map(admin => admin.email);
+      return res.status(400).json({ 
+        success: false, 
+        message: `These emails already have admin accounts: ${duplicateEmails.join(', ')}` 
+      });
+    }
+
+    // 3. Format the data for Prisma's bulk creation
+    const adminsToCreate = emails.map((email: string) => ({
+      email: String(email),
+      domainId: String(domainId)
+    }));
+
+    // 4. Create all the accounts at the exact same time
+    const createdAdmins = await prisma.admin.createMany({
+      data: adminsToCreate,
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: `Successfully granted domain access to ${createdAdmins.count} head(s).`,
+      assignedEmails: emails
+    });
+  } catch (error) {
+    console.error('Error assigning domain heads:', error);
+    return res.status(500).json({ success: false, message: 'Server error while assigning domain heads' });
+  }
+};

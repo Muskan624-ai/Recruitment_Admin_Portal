@@ -8,15 +8,13 @@ datasource db {
 }
 
 model Admin {
-  id                 String   @id @default(auto()) @map("_id") @db.ObjectId
-  name               String
-  registrationNumber String   @unique
-  email              String   @unique
-  password           String   
+  id                 String    @id @default(auto()) @map("_id") @db.ObjectId
+  name               String?   // Optional
+  email              String    @unique 
   role               AdminRole @default(DOMAIN_HEAD)
-  domainId           String?  @db.ObjectId
-  domain             Domain?  @relation(fields: [domainId], references: [id])
-  slotsCreated       Slot[]   @relation("AdminSlots")
+  domainId           String?   @db.ObjectId
+  domain             Domain?   @relation(fields: [domainId], references: [id])
+  slotsCreated       Slot[]    @relation("AdminSlots")
 }
 
 model Domain {
@@ -28,7 +26,7 @@ model Domain {
 model User {
   id                 String   @id @default(auto()) @map("_id") @db.ObjectId
   name               String
-  registrationNumber String   @unique
+  registrationNumber String   @unique 
   email              String   @unique
   phone              String
   stage              Stage    @default(FORM_FILLING) 
@@ -39,7 +37,7 @@ model User {
   review2Marks       Int?     
   review2Comments    String?  
   review2Passed      Boolean  @default(false) 
-  bookedSlot         Slot?    // A user can book one interview slot
+  bookedSlot         Slot?   
 }
 
 model Slot {
@@ -65,9 +63,9 @@ enum AdminRole {
 
 enum Stage {
   FORM_FILLING
-  SHORTLISTED     // Replaces your REVIEW_1_PENDING
+  SHORTLISTED     
   SLOT_CHOOSING   
-  INTERVIEW       // Replaces your REVIEW_2_PENDING
+  INTERVIEW       
   SELECTED
   REJECTED
 }
