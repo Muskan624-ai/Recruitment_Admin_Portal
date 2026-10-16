@@ -7,45 +7,65 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// This defines your Admins (Root and Domain Heads)
 model Admin {
-  id        String   @id @default(auto()) @map("_id") @db.ObjectId
-  name      String
-  registrationNumber String  @unique
-  email     String   @unique
-  password  String   // We will encrypt this later
-  role      Role     @default(DOMAIN_HEAD)
-  domain    Domain?  // Optional: Root admins don't need a specific domain
+  id                 String    @id @default(auto()) @map("_id") @db.ObjectId
+  name               String?   // Optional
+  email              String    @unique 
+  role               AdminRole @default(DOMAIN_HEAD)
+  domainId           String?   @db.ObjectId
+  domain             Domain?   @relation(fields: [domainId], references: [id])
+  slotsCreated       Slot[]    @relation("AdminSlots")
 }
 
-// This defines the Applicants submitting the frontend form
-model Applicant {
-  id              String   @id @default(auto()) @map("_id") @db.ObjectId
-  name            String
-  registrationNumber String  @unique
-  email           String   @unique
-  phone           String
-  appliedDomain   Domain
-  status          Status   @default(REVIEW_1_PENDING) 
-  responses       String[]
+model Domain {
+  id     String  @id @default(auto()) @map("_id") @db.ObjectId
+  name   String  @unique // e.g., "TECHNICAL", "MANAGEMENT"
+  admins Admin[]
 }
 
-enum Role {
+model User {
+  id                 String   @id @default(auto()) @map("_id") @db.ObjectId
+  name               String
+  registrationNumber String   @unique 
+  email              String   @unique
+  phone              String
+  stage              Stage    @default(FORM_FILLING) 
+  responses          String[] 
+  review1Marks       Int?     
+  review1Comments    String?  
+  review1Passed      Boolean  @default(false) 
+  review2Marks       Int?     
+  review2Comments    String?  
+  review2Passed      Boolean  @default(false) 
+  bookedSlot         Slot?   
+}
+
+model Slot {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  startTime     DateTime 
+  endTime       DateTime 
+  meetingLink   String   // The Google Meet link the Head pastes
+  isBooked      Boolean  @default(false)
+  
+  // Connects the slot to the specific Head conducting the interview
+  interviewerId String   @db.ObjectId
+  interviewer   Admin    @relation("AdminSlots", fields: [interviewerId], references: [id])
+  
+  // Connects the slot to the shortlisted Candidate who chose it
+  userId        String?  @unique @db.ObjectId 
+  user          User?    @relation(fields: [userId], references: [id])
+}
+
+enum AdminRole {
   ROOT_ADMIN
   DOMAIN_HEAD
 }
 
-enum Domain {
-  TECHNICAL
-  MANAGEMENT
-  DESIGN
-  EDITORIAL
-  R_AND_D
-  MARKETING
-}
-
-enum Status {
-  REVIEW_1_PENDING
-  REVIEW_2_PENDING
-  ACCEPTED
+enum Stage {
+  FORM_FILLING
+  SHORTLISTED     
+  SLOT_CHOOSING   
+  INTERVIEW       
+  SELECTED
+  REJECTED
 }
