@@ -7,65 +7,137 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Admin {
-  id                 String    @id @default(auto()) @map("_id") @db.ObjectId
-  name               String?   // Optional
-  email              String    @unique 
-  role               AdminRole @default(DOMAIN_HEAD)
-  domainId           String?   @db.ObjectId
-  domain             Domain?   @relation(fields: [domainId], references: [id])
-  slotsCreated       Slot[]    @relation("AdminSlots")
+enum DomainType {
+  TECHNICAL
+  MANAGEMENT
+  DESIGN
+  MARKETING
+  R_AND_D
+  EDITORIAL
 }
 
-model Domain {
-  id     String  @id @default(auto()) @map("_id") @db.ObjectId
-  name   String  @unique // e.g., "TECHNICAL", "MANAGEMENT"
-  admins Admin[]
+enum Role {
+  CANDIDATE
+  DOMAIN_HEAD
+  ROOT_ADMIN
+}
+
+// 1 form filling, 2 shortlisted, 3 slot choosing, 4 interview, 5 selected
+enum Stage {
+  FORM_FILLING
+  SHORTLISTED
+  SLOT_CHOOSING
+  INTERVIEW
+  SELECTED
+  REJECTED
+}
+
+model Admin {
+  id                 String        @id @default(auto()) @map("_id") @db.ObjectId
+  name               String?
+  email              String        @unique
+  role               Role          @default(DOMAIN_HEAD)
+  domain             DomainType?   
+  
+  slotsCreated       Slot[]        @relation("AdminSlots")
 }
 
 model User {
-  id                 String   @id @default(auto()) @map("_id") @db.ObjectId
+  id                 String        @id @default(auto()) @map("_id") @db.ObjectId
   name               String
-  registrationNumber String   @unique 
-  email              String   @unique
+  email              String        @unique
   phone              String
-  stage              Stage    @default(FORM_FILLING) 
-  responses          String[] 
+  regNumber          String        @unique 
+  image              String?
+  role               Role          @default(CANDIDATE)
+  
+  formSubmittedAt    DateTime?
+  answers            Answer[]
+  applications       Application[] 
+
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+}
+
+model Application {
+  id                 String        @id @default(auto()) @map("_id") @db.ObjectId
+  domain             DomainType
+  stage              Stage         @default(FORM_FILLING)
+
+  // Admin Evaluations
   review1Marks       Int?     
   review1Comments    String?  
-  review1Passed      Boolean  @default(false) 
+  review1Passed      Boolean       @default(false) 
   review2Marks       Int?     
   review2Comments    String?  
-  review2Passed      Boolean  @default(false) 
-  bookedSlot         Slot?   
+  review2Passed      Boolean       @default(false) 
+
+  // Email Tracking (For the separate Nodemailer Service)
+  emailStatus        String?       // "SENT" or "FAILED"
+  emailSentAt        DateTime?     
+
+  // Relations
+  userId             String        @db.ObjectId
+  user               User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bookedSlot         Slot?         @relation("ApplicationSlot")
+
+  @@unique([userId, domain]) 
+}
+
+model Subsection {
+  id                 String        @id @default(auto()) @map("_id") @db.ObjectId
+  domain             DomainType    
+  name               String
+  order              Int           @default(0)
+  questions          Question[]
+}
+
+model Question {
+  id                 String        @id @default(auto()) @map("_id") @db.ObjectId
+  domain             DomainType    
+  subsectionId       String?       @db.ObjectId
+  subsection         Subsection?   @relation(fields: [subsectionId], references: [id])
+  text               String
+  order              Int           @default(0)
+  required           Boolean       @default(true)
+  maxLength          Int           @default(2000)
+  answers            Answer[]
+}
+
+model Answer {
+  id                 String        @id @default(auto()) @map("_id") @db.ObjectId
+  text               String
+  
+  userId             String        @db.ObjectId
+  user               User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  questionId         String        @db.ObjectId
+  question           Question      @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  
+  updatedAt          DateTime      @updatedAt
+
+  @@unique([userId, questionId])
 }
 
 model Slot {
-  id            String   @id @default(auto()) @map("_id") @db.ObjectId
-  startTime     DateTime 
-  endTime       DateTime 
-  meetingLink   String   // The Google Meet link the Head pastes
-  isBooked      Boolean  @default(false)
+  id                 String        @id @default(auto()) @map("_id") @db.ObjectId
+  domain             DomainType
+  startTime          DateTime
+  endTime            DateTime
+  meetingLink        String?       
+  isBooked           Boolean       @default(false)
   
-  // Connects the slot to the specific Head conducting the interview
-  interviewerId String   @db.ObjectId
-  interviewer   Admin    @relation("AdminSlots", fields: [interviewerId], references: [id])
-  
-  // Connects the slot to the shortlisted Candidate who chose it
-  userId        String?  @unique @db.ObjectId 
-  user          User?    @relation(fields: [userId], references: [id])
+  interviewerId      String        @db.ObjectId
+  interviewer        Admin         @relation("AdminSlots", fields: [interviewerId], references: [id])
+
+  applicationId      String?       @unique @db.ObjectId
+  application        Application?  @relation("ApplicationSlot", fields: [applicationId], references: [id], onDelete: SetNull)
 }
 
-enum AdminRole {
-  ROOT_ADMIN
-  DOMAIN_HEAD
-}
-
-enum Stage {
-  FORM_FILLING
-  SHORTLISTED     
-  SLOT_CHOOSING   
-  INTERVIEW       
-  SELECTED
-  REJECTED
+model RecruitmentConfig {
+  id                 String        @id @default(auto()) @map("_id") @db.ObjectId
+  key                String        @unique @default("main")
+  isOpen             Boolean       @default(true)
+  formDeadline       DateTime
+  updatedAt          DateTime      @updatedAt
 }

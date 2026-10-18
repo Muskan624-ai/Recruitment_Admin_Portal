@@ -1,15 +1,23 @@
 import { Request, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, DomainType, Role } from '@prisma/client'; 
+//import { sendStageEmail } from '../services/emailService';
 
 const prisma = new PrismaClient();
 
-// 1. Fetch all applicants (Users)
+// 1. Fetch all applicants 
 export const getAllApplicants = async (req: Request, res: Response) => {
   try {
-    const applicants = await prisma.user.findMany({
-      orderBy: { registrationNumber: 'asc' },
+    const { domain } = req.query;
+    
+    const applications = await prisma.application.findMany({
+      where: domain ? { domain: String(domain) as DomainType } : undefined, 
+      include: {
+        user: true 
+      },
+      orderBy: { user: { regNumber: 'asc' } },
     });
-    return res.status(200).json({ success: true, data: applicants });
+    
+    return res.status(200).json({ success: true, data: applications });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Server error' });
   }
@@ -18,8 +26,17 @@ export const getAllApplicants = async (req: Request, res: Response) => {
 // 2. Fetch a single applicant's full details
 export const getApplicantById = async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
-    const applicant = await prisma.user.findUnique({ where: { id: String(id) } });
+    const { id } = req.params; 
+    
+    const applicant = await prisma.user.findUnique({ 
+      where: { id: String(id) },
+      include: {
+        applications: true,
+        answers: {
+          include: { question: true } 
+        }
+      }
+    });
 
     if (!applicant) return res.status(404).json({ success: false, message: 'Applicant not found' });
     return res.status(200).json({ success: true, data: applicant });
@@ -28,35 +45,38 @@ export const getApplicantById = async (req: Request, res: Response) => {
   }
 };
 
-// 3. Update an applicant's evaluation notes and stage
+// 3. Update an applicant's evaluation notes and stage 
 export const updateApplicantReview = async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const { applicationId } = req.params; 
     const { 
       stage, 
       review1Marks, review1Comments, review1Passed, 
       review2Marks, review2Comments, review2Passed 
     } = req.body;
 
-    const updatedApplicant = await prisma.user.update({
-      where: { id: String(id) },
+    const updatedApplication = await prisma.application.update({
+      where: { id: String(applicationId) },
       data: { 
         stage, review1Marks, review1Comments, review1Passed, review2Marks, review2Comments, review2Passed 
       },
+      include: { user: true } 
     });
-    return res.status(200).json({ success: true, data: updatedApplicant });
+
+    return res.status(200).json({ success: true, data: updatedApplication });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Server error' });
   }
 };
 
-// 4. Create Interview Slots (Domain Head creates their availability)
+// 4. Create Interview Slots 
 export const createInterviewSlots = async (req: Request, res: Response) => {
   try {
-    const { interviewerId, meetingLink, timeBlocks } = req.body; 
+    const { interviewerId, domain, meetingLink, timeBlocks } = req.body; 
 
     const slotsToCreate = timeBlocks.map((block: any) => ({
-      interviewerId,
+      interviewerId: String(interviewerId),
+      domain: domain as DomainType, // Cast to Enum
       meetingLink,
       startTime: new Date(block.startTime),
       endTime: new Date(block.endTime),
@@ -68,12 +88,11 @@ export const createInterviewSlots = async (req: Request, res: Response) => {
 
     return res.status(201).json({ success: true, message: `${createdSlots.count} slots created` });
   } catch (error) {
-    console.error(error);
     return res.status(500).json({ success: false, message: 'Server error while creating slots' });
   }
 };
 
-// 5. Get My Schedule (Domain Head checks who booked them)
+// 5. Get My Schedule 
 export const getMySchedule = async (req: Request, res: Response) => {
   try {
     const { adminId } = req.params;
@@ -84,7 +103,11 @@ export const getMySchedule = async (req: Request, res: Response) => {
         isBooked: true 
       },
       include: {
-        user: true 
+        application: {
+          include: {
+            user: true 
+          }
+        }
       },
       orderBy: { startTime: 'asc' } 
     });
@@ -95,17 +118,15 @@ export const getMySchedule = async (req: Request, res: Response) => {
   }
 };
 
-// 6. Assign Domain Heads (Root Admin Only)
+// 6. Assign Domain Heads 
 export const assignDomainHead = async (req: Request, res: Response) => {
   try {
-    const { emails, domainId } = req.body; 
+    const { emails, domain } = req.body; 
 
-    // 1. Basic validation
     if (!emails || !Array.isArray(emails) || emails.length === 0) {
       return res.status(400).json({ success: false, message: 'Please provide an array of emails.' });
     }
 
-    // 2. Prevent crashes by checking if any of these emails already exist in the database
     const existingAdmins = await prisma.admin.findMany({
       where: { email: { in: emails } }
     });
@@ -118,13 +139,12 @@ export const assignDomainHead = async (req: Request, res: Response) => {
       });
     }
 
-    // 3. Format the data for Prisma's bulk creation
     const adminsToCreate = emails.map((email: string) => ({
       email: String(email),
-      domainId: String(domainId)
+      role: "DOMAIN_HEAD" as Role, 
+      domain: domain as DomainType 
     }));
 
-    // 4. Create all the accounts at the exact same time
     const createdAdmins = await prisma.admin.createMany({
       data: adminsToCreate,
     });
@@ -134,8 +154,48 @@ export const assignDomainHead = async (req: Request, res: Response) => {
       message: `Successfully granted domain access to ${createdAdmins.count} head(s).`,
       assignedEmails: emails
     });
-  } catch (error) {
-    console.error('Error assigning domain heads:', error);
+  } catch (error) { 
     return res.status(500).json({ success: false, message: 'Server error while assigning domain heads' });
+  }
+};
+
+// 7. Create a Form Subsection 
+export const createSubsection = async (req: Request, res: Response) => {
+  try {
+    const { name, domain, order } = req.body; 
+
+    const subsection = await prisma.subsection.create({
+      data: { 
+        name, 
+        domain: domain as DomainType, 
+        order: order || 0 
+      }
+    });
+
+    return res.status(201).json({ success: true, data: subsection });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Server error while creating subsection' });
+  }
+};
+
+// 8. Create a Question inside a Subsection
+export const createQuestion = async (req: Request, res: Response) => {
+  try {
+    const { text, domain, subsectionId, required, order, maxLength } = req.body;
+
+    const question = await prisma.question.create({
+      data: {
+        text,
+        domain: domain as DomainType, // Cast to Enum
+        subsectionId: subsectionId ? String(subsectionId) : null,
+        required: required !== undefined ? required : true,
+        order: order || 0,
+        maxLength: maxLength || 2000
+      }
+    });
+
+    return res.status(201).json({ success: true, data: question });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Server error while creating question' });
   }
 };
