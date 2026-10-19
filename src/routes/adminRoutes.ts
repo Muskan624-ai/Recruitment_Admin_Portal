@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import { 
+  setupAdminAccount,
+  loginAdmin,
   getAllApplicants, 
   getApplicantById, 
   updateApplicantReview,
@@ -9,14 +11,17 @@ import {
   createSubsection, 
   createQuestion    
 } from '../controllers/adminController';
-import { authorizeRole } from '../middleware/authMiddleware'; 
+import { authorizeRole, verifyToken } from '../middleware/authMiddleware';
 
 const router = Router();
+router.post('/setup', setupAdminAccount); // "Create Account" button hits this
+router.post('/login', loginAdmin);        // "Login" button hits this
+
+router.use(verifyToken);
 
 // Domain Heads & Root Admins can view and evaluate candidates
 router.get('/applicants', authorizeRole(['DOMAIN_HEAD', 'ROOT_ADMIN']), getAllApplicants);
 router.get('/applicants/:id', authorizeRole(['DOMAIN_HEAD', 'ROOT_ADMIN']), getApplicantById);
-
 router.put('/applicants/:applicationId/review', authorizeRole(['DOMAIN_HEAD', 'ROOT_ADMIN']), updateApplicantReview);
 
 // Domain Heads create their slots and view their schedules
