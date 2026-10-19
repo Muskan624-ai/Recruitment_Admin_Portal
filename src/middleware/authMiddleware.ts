@@ -1,18 +1,38 @@
 import { Request, Response, NextFunction } from 'express';
+import { Admin } from '@prisma/client'; 
+import jwt from 'jsonwebtoken';
 
 export interface CustomRequest extends Request {
-  user?: {
-    role: string;
-  };
+  user?: Admin; 
 }
 
+// 1. Verify the JWT token sent by the Admin Frontend
+export const verifyToken = (req: CustomRequest, res: Response, next: NextFunction) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, message: 'Access Denied: No token provided' });
+    }
+
+    const token = authHeader.split(' ')[1];
+
+    // Verify using the same JWT_SECRET used in adminController.ts
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret');
+    req.user = decoded as Admin;
+
+    next();
+  } catch (error) {
+    return res.status(401).json({ success: false, message: 'Invalid or expired token' });
+  }
+};
+
+// 2. Check if the logged-in Admin has the required role
 export const authorizeRole = (allowedRoles: string[]) => {
   return (req: CustomRequest, res: Response, next: NextFunction) => {
-    
     const userRole = req.user?.role; 
 
     if (!userRole || !allowedRoles.includes(userRole)) {
-      return res.status(403).json({ message: "Access Denied: Invalid Role" });
+      return res.status(403).json({ success: false, message: 'Access Denied: Invalid Role' });
     }
     
     next();
