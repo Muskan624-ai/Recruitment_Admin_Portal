@@ -13,7 +13,7 @@ const DOMAINS = [
 
 export default function AdminPortalPrototype() {
   const [baseUrl, setBaseUrl] = useState(
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api/admin"
+  (process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000") + "/api/admin"
 );
   const [token, setToken] = useState("");
   const [adminUser, setAdminUser] = useState<any>(null);
