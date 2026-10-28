@@ -88,38 +88,56 @@ export const updateApplicantReview = async (req: CustomRequest, res: Response) =
   }
 };
 
-// 4. Create Interview Slots 
+// 4. Create Interview Slots (Auto-generates 10-minute intervals across multi-day ranges)
 export const createInterviewSlots = async (req: Request, res: Response) => {
   try {
-    const { interviewerId, domain, meetingLink, timeBlocks } = req.body; 
+    const { interviewerId, domain, meetingLink, startTime, endTime } = req.body; 
 
-    const slotsToCreate = timeBlocks.map((block: any) => ({
-      interviewerId: String(interviewerId),
-      domain: domain as DomainType, // Cast to Enum
-      meetingLink,
-      startTime: new Date(block.startTime),
-      endTime: new Date(block.endTime),
-    }));
+    const start = new Date(startTime);
+    const end = new Date(endTime);
+    const slotsToCreate = [];
+
+    let currentStart = new Date(start);
+    while (currentStart < end) {
+      const currentEnd = new Date(currentStart.getTime() + 10 * 60000); // +10 minutes
+      if (currentEnd > end) break;
+
+      slotsToCreate.push({
+        interviewerId: String(interviewerId),
+        domain: domain as DomainType,
+        meetingLink,
+        startTime: new Date(currentStart),
+        endTime: new Date(currentEnd),
+        capacity: 1, // Strict exclusive 1 candidate per slot
+      });
+
+      currentStart = currentEnd;
+    }
+
+    if (slotsToCreate.length === 0) {
+      return res.status(400).json({ success: false, message: 'Invalid time range for 10-minute slots.' });
+    }
 
     const createdSlots = await prisma.slot.createMany({
       data: slotsToCreate,
     });
 
-    return res.status(201).json({ success: true, message: `${createdSlots.count} slots created` });
+    return res.status(201).json({ success: true, message: `Successfully generated ${createdSlots.count} individual 10-minute slots!` });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Server error while creating slots' });
   }
 };
 
-// 5. Get My Schedule 
+// 5. Get My Schedule (Supports viewing all created slots or only booked ones)
 export const getMySchedule = async (req: Request, res: Response) => {
   try {
     const { adminId } = req.params;
+    const { all } = req.query; // Pass ?all=true to see all created slots
 
     const mySchedule = await prisma.slot.findMany({
       where: { 
         interviewerId: String(adminId),
-        bookedCount: { gt: 0 }
+        ...(all === 'true' ? {} : { bookedCount: { gt: 0 } })
       },
       include: {
         bookings: { 
