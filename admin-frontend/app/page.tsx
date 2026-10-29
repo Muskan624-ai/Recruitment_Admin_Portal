@@ -73,7 +73,7 @@ export default function AdminPortal() {
   const [slotDate, setSlotDate] = useState<string>("");
   const [slotStartTime, setSlotStartTime] = useState<string>("10:00");
   const [slotEndTime, setSlotEndTime] = useState<string>("11:00");
-  const [slotDuration, setSlotDuration] = useState<number>(20); // Domain head decides duration!
+  const [slotDuration, setSlotDuration] = useState<number>(20);
   const [slotMeetingLink, setSlotMeetingLink] = useState<string>("");
   const [slotsList, setSlotsList] = useState<any[]>([]);
 
@@ -86,7 +86,6 @@ export default function AdminPortal() {
     setTimeout(() => setStatusMsg(null), 6000);
   };
 
-  // Decode JWT payload as fallback if id wasn't returned on top-level
   const parseJwt = (tk: string) => {
     try {
       return JSON.parse(atob(tk.split(".")[1]));
@@ -94,6 +93,31 @@ export default function AdminPortal() {
       return {};
     }
   };
+
+  // Restore token & session from localStorage on load
+  useEffect(() => {
+    const savedToken = localStorage.getItem("admin_token");
+    if (savedToken) {
+      const decoded = parseJwt(savedToken);
+      if (decoded.exp && decoded.exp * 1000 < Date.now()) {
+        localStorage.removeItem("admin_token");
+      } else {
+        setToken(savedToken);
+        const userObj = {
+          id: decoded.id,
+          email: decoded.email,
+          role: decoded.role,
+          domain: decoded.domain,
+        };
+        setAdminUser(userObj);
+        if (userObj.domain) {
+          setFilterDomain(userObj.domain);
+          setQuestionDomain(userObj.domain);
+          setSlotDomain(userObj.domain);
+        }
+      }
+    }
+  }, []);
 
   // Auth Handler (/login and /setup)
   const handleAuth = async (endpoint: "/login" | "/setup") => {
@@ -119,6 +143,7 @@ export default function AdminPortal() {
       };
 
       setToken(data.token);
+      localStorage.setItem("admin_token", data.token);
       setAdminUser(userObj);
 
       const defaultDom = userObj.domain || "TECHNICAL";
@@ -149,7 +174,6 @@ export default function AdminPortal() {
       if (!res.ok) throw new Error(json.message || "Failed to fetch applicants");
 
       const rawList = json.data || json.applicants || [];
-      // Only show candidates who have submitted their application
       const submittedOnly = rawList.filter((app: any) => Boolean(app.submittedAt));
       setCandidates(submittedOnly);
     } catch (err: any) {
@@ -157,7 +181,6 @@ export default function AdminPortal() {
     }
   };
 
-  // Select a candidate and load their full question answers
   const handleSelectCandidate = async (app: any) => {
     setSelectedApp(app);
     setReviewComments(app.review1Comments || "");
@@ -167,7 +190,6 @@ export default function AdminPortal() {
 
     let answersList = app.user?.answers || [];
 
-    // If answers weren't embedded in list response, fetch via GET /applicants/:userId
     if (answersList.length === 0 && app.userId && token) {
       try {
         const res = await fetch(`${API_BASE}/applicants/${app.userId}`, {
@@ -202,7 +224,6 @@ export default function AdminPortal() {
     0
   );
 
-  // Save Per-Question Marks & Stage Decision via PUT /applicants/:applicationId/review
   const handleSaveEvaluation = async () => {
     if (!selectedApp || !token) return;
     try {
@@ -242,7 +263,7 @@ export default function AdminPortal() {
     }
   };
 
-  // 2. Fetch Form Questions & Subsections via GET /form
+  // 2. Fetch Form Questions & Subsections
   const fetchFormQuestions = async (dom = questionDomain) => {
     if (!token) return;
     try {
@@ -259,7 +280,6 @@ export default function AdminPortal() {
     }
   };
 
-  // Create Subsection via POST /form/subsection
   const handleCreateSubsection = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!token || !newSubsectionName.trim()) return;
@@ -287,7 +307,6 @@ export default function AdminPortal() {
     }
   };
 
-  // Create Question with Max Marks via POST /form/question
   const handleCreateQuestion = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!token || !newQuestionText.trim()) return;
@@ -319,7 +338,7 @@ export default function AdminPortal() {
     }
   };
 
-  // 3. Fetch Schedule / Created Slots via GET /schedule/:adminId?all=true
+  // 3. Fetch Slots
   const fetchSlots = async (dom = slotDomain) => {
     if (!token || !adminUser?.id) return;
     try {
@@ -339,7 +358,6 @@ export default function AdminPortal() {
     }
   };
 
-  // Create Calendly-Style Slots via POST /slots
   const handleCreateSlots = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!token || !slotDate || !slotStartTime || !slotEndTime) {
@@ -381,7 +399,7 @@ export default function AdminPortal() {
     }
   };
 
-  // 4. Root Admin Assign Domain Heads via POST /domain-heads
+  // 4. Root Admin Whitelist
   const handleAssignDomainHeads = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!token || !assignEmails.trim()) return;
@@ -440,6 +458,7 @@ export default function AdminPortal() {
               </span>
               <button
                 onClick={() => {
+                  localStorage.removeItem("admin_token");
                   setToken(null);
                   setAdminUser(null);
                   setSelectedApp(null);
@@ -573,7 +592,7 @@ export default function AdminPortal() {
               )}
             </div>
 
-            {/* TAB 1: CANDIDATE REVIEW (Per-Question Marks, No IDs, Ankita's 3 Stages) */}
+            {/* TAB 1: CANDIDATE REVIEW */}
             {activeTab === "candidates" && (
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                 <div className="lg:col-span-5 bg-white p-5 rounded-xl shadow-sm border border-slate-200 space-y-4">
@@ -654,7 +673,6 @@ export default function AdminPortal() {
                   </div>
                 </div>
 
-                {/* Candidate Review Panel (Application ID & Meeting Link Removed) */}
                 <div className="lg:col-span-7 bg-white p-5 rounded-xl shadow-sm border border-slate-200">
                   <h2 className="font-bold text-base border-b border-slate-200 pb-3 mb-4">
                     Candidate Form Evaluation
@@ -666,20 +684,15 @@ export default function AdminPortal() {
                     </p>
                   ) : (
                     <div className="space-y-5">
-                      {/* Clean Candidate Header (NO Application ID / Record ID) */}
                       <div className="bg-slate-50 p-4 rounded-lg border border-slate-200 grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
                         <div>
-                          <span className="text-slate-400 block">
-                            Candidate Name
-                          </span>
+                          <span className="text-slate-400 block">Candidate Name</span>
                           <span className="font-semibold text-slate-800">
                             {selectedApp.user?.name}
                           </span>
                         </div>
                         <div>
-                          <span className="text-slate-400 block">
-                            Registration Number
-                          </span>
+                          <span className="text-slate-400 block">Registration Number</span>
                           <span className="font-semibold text-slate-800">
                             {selectedApp.user?.regNumber}
                           </span>
@@ -697,28 +710,21 @@ export default function AdminPortal() {
                           </span>
                         </div>
                         <div>
-                          <span className="text-slate-400 block">
-                            Current Stage
-                          </span>
+                          <span className="text-slate-400 block">Current Stage</span>
                           <span className="font-semibold text-slate-800">
                             {selectedApp.stage}
                           </span>
                         </div>
                         <div>
-                          <span className="text-slate-400 block">
-                            Submitted On
-                          </span>
+                          <span className="text-slate-400 block">Submitted On</span>
                           <span className="font-semibold text-slate-800">
                             {selectedApp.submittedAt
-                              ? new Date(
-                                  selectedApp.submittedAt
-                                ).toLocaleDateString()
+                              ? new Date(selectedApp.submittedAt).toLocaleDateString()
                               : "Submitted"}
                           </span>
                         </div>
                       </div>
 
-                      {/* Question-by-Question Grading */}
                       <div className="space-y-3">
                         <div className="flex justify-between items-center">
                           <h3 className="text-sm font-bold text-slate-800">
@@ -753,8 +759,7 @@ export default function AdminPortal() {
                                 >
                                   <div className="flex justify-between items-start gap-4">
                                     <p className="text-xs font-semibold text-slate-800">
-                                      Q{idx + 1}.{" "}
-                                      {ans.question?.text || "Question"}
+                                      Q{idx + 1}. {ans.question?.text || "Question"}
                                     </p>
                                     <div className="flex items-center gap-1.5 shrink-0">
                                       <label className="text-[11px] text-slate-500">
@@ -787,7 +792,6 @@ export default function AdminPortal() {
                         )}
                       </div>
 
-                      {/* Stage Decision & Reviewer Comments */}
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-3 border-t border-slate-200">
                         <div>
                           <label className="block text-xs font-semibold text-slate-700 mb-1">
@@ -839,7 +843,6 @@ export default function AdminPortal() {
             {activeTab === "questions" && (
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                 <div className="lg:col-span-5 space-y-6">
-                  {/* Add Question Card */}
                   <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
                     <h2 className="font-bold text-base mb-1">
                       Add Form Question & Assign Marks
@@ -948,7 +951,6 @@ export default function AdminPortal() {
                     </form>
                   </div>
 
-                  {/* Optional Subsection Creator */}
                   <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
                     <h3 className="font-bold text-sm mb-2">
                       Create Form Subsection (Optional)
@@ -974,7 +976,6 @@ export default function AdminPortal() {
                   </div>
                 </div>
 
-                {/* Questions List */}
                 <div className="lg:col-span-7 bg-white p-5 rounded-xl shadow-sm border border-slate-200">
                   <div className="flex justify-between items-center mb-4">
                     <h2 className="font-bold text-base">
@@ -1113,9 +1114,6 @@ export default function AdminPortal() {
                         }
                         className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs"
                       />
-                      <p className="text-[11px] text-slate-400 mt-1">
-                        Example: 10:00 to 11:00 with 20 mins duration creates three 20-minute slots.
-                      </p>
                     </div>
 
                     <div>
