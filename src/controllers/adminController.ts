@@ -429,8 +429,13 @@ export const setupAdminAccount = async (req: Request, res: Response) => {
       domain: updatedAdmin.domain 
     });
   } catch (error) {
-    return res.status(500).json({ success: false, message: 'Server error during account setup' });
-  }
+  console.error('createQuestion failed:', error);
+
+  return res.status(500).json({
+    success: false,
+    message: 'Server error while creating question'
+  });
+}
 };
 
 // 11. Login Admin 
