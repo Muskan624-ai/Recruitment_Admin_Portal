@@ -86,7 +86,16 @@ export const updateApplicantReview = async (req: CustomRequest, res: Response) =
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
 
-    // 1. Save individual question marks if provided
+    // 1. Fetch current application to check its existing stage
+    const currentApp = await prisma.application.findUnique({
+      where: { id: String(applicationId) }
+    });
+
+    if (!currentApp) {
+      return res.status(404).json({ success: false, message: 'Application not found' });
+    }
+
+    // 2. Save individual question marks if provided
     if (Array.isArray(answerScores) && answerScores.length > 0) {
       await Promise.all(
         answerScores.map((item: { answerId: string; marks: number }) =>
@@ -98,12 +107,12 @@ export const updateApplicantReview = async (req: CustomRequest, res: Response) =
       );
     }
 
-    // 2. Update the application stage via adminRules (SHORTLISTED, SELECTED, REJECTED)
-    if (stage) {
+    // 3. Update the application stage via adminRules ONLY if the stage is actually changing
+    if (stage && stage !== currentApp.stage) {
       await changeStage(String(applicationId), stage, admin as any);
     }
 
-    // 3. Update the evaluation notes directly
+    // 4. Update the evaluation notes and marks directly
     const updatedApplication = await prisma.application.update({
       where: { id: String(applicationId) },
       data: { 

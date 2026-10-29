@@ -20,8 +20,12 @@ const DOMAINS = [
   "EDITORIAL",
 ];
 
-// Ankita's rule: Admins only set SHORTLISTED, SELECTED, and REJECTED
-const ADMIN_ALLOWED_STAGES = ["SHORTLISTED", "SELECTED", "REJECTED"];
+const ADMIN_ALLOWED_STAGES = [
+  "SHORTLISTED",
+  "SLOT_CHOOSING",
+  "SELECTED",
+  "REJECTED",
+];
 
 export default function AdminPortal() {
   const [token, setToken] = useState<string | null>(null);
