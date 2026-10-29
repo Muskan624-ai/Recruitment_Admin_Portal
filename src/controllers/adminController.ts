@@ -4,26 +4,46 @@ import { changeStage } from '../utils/adminRules';
 import { CustomRequest } from '../middleware/authMiddleware';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
-//import { sendStageEmail } from '../services/emailService';
 
 const prisma = new PrismaClient();
 
-// 1. Fetch all applicants 
-export const getAllApplicants = async (req: Request, res: Response) => {
+// 1. Fetch all submitted applicants (Ankita's rule: only where submittedAt is set)
+export const getAllApplicants = async (req: CustomRequest, res: Response) => {
   try {
-    const { domain } = req.query;
-    
+    const queryDomain = req.query.domain as string | undefined;
+    const admin = req.user as any;
+
+    // Domain heads only see their own domain; Root Admin can filter or see all
+    const effectiveDomain =
+      admin?.role === 'DOMAIN_HEAD' && admin?.domain
+        ? (admin.domain as DomainType)
+        : queryDomain && queryDomain !== 'ALL'
+        ? (queryDomain as DomainType)
+        : undefined;
+
     const applications = await prisma.application.findMany({
-      where: domain ? { domain: String(domain) as DomainType } : undefined, 
+      where: {
+        ...(effectiveDomain ? { domain: effectiveDomain } : {}),
+        submittedAt: { not: null },
+      },
       include: {
-        user: true 
+        user: {
+          include: {
+            answers: {
+              include: { question: true },
+            },
+          },
+        },
+        booking: {
+          include: { slot: true },
+        },
       },
       orderBy: { user: { regNumber: 'asc' } },
     });
-    
+
     return res.status(200).json({ success: true, data: applications });
   } catch (error) {
-    return res.status(500).json({ success: false, message: 'Server error' });
+    return res.status(500).json({ success: false, message: 'Server error fetching applicants' });
   }
 };
 
@@ -49,14 +69,15 @@ export const getApplicantById = async (req: Request, res: Response) => {
   }
 };
 
-// 3. Update an applicant's evaluation notes and stage 
+// 3. Update an applicant's individual question marks, evaluation notes, and stage
 export const updateApplicantReview = async (req: CustomRequest, res: Response) => {
   try {
     const { applicationId } = req.params; 
     const { 
       stage, 
       review1Marks, review1Comments, review1Passed, 
-      review2Marks, review2Comments, review2Passed 
+      review2Marks, review2Comments, review2Passed,
+      answerScores // Array of { answerId: string, marks: number }
     } = req.body;
 
     const admin = req.user; 
@@ -65,78 +86,130 @@ export const updateApplicantReview = async (req: CustomRequest, res: Response) =
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
 
-    // 1. Update the application stage 
+    // 1. Save individual question marks if provided
+    if (Array.isArray(answerScores) && answerScores.length > 0) {
+      await Promise.all(
+        answerScores.map((item: { answerId: string; marks: number }) =>
+          prisma.answer.update({
+            where: { id: String(item.answerId) },
+            data: { marks: Number(item.marks) || 0 },
+          })
+        )
+      );
+    }
+
+    // 2. Update the application stage via adminRules (SHORTLISTED, SELECTED, REJECTED)
     if (stage) {
       await changeStage(String(applicationId), stage, admin as any);
     }
 
-    // 2. Update the evaluation notes directly
+    // 3. Update the evaluation notes directly
     const updatedApplication = await prisma.application.update({
       where: { id: String(applicationId) },
       data: { 
-        review1Marks, review1Comments, review1Passed, 
-        review2Marks, review2Comments, review2Passed 
+        ...(review1Marks !== undefined ? { review1Marks: Number(review1Marks) } : {}),
+        ...(review1Comments !== undefined ? { review1Comments } : {}),
+        ...(review1Passed !== undefined ? { review1Passed: Boolean(review1Passed) } : {}),
+        ...(review2Marks !== undefined ? { review2Marks: Number(review2Marks) } : {}),
+        ...(review2Comments !== undefined ? { review2Comments } : {}),
+        ...(review2Passed !== undefined ? { review2Passed: Boolean(review2Passed) } : {}),
       },
-      include: { user: true }
+      include: {
+        user: {
+          include: {
+            answers: { include: { question: true } }
+          }
+        }
+      }
     });
 
     return res.status(200).json({ success: true, data: updatedApplication });
   } catch (error: any) {
-    // Return the specific HttpError message if a rule is violated 
     const status = error.status || 500;
     return res.status(status).json({ success: false, message: error.message || 'Server error' });
   }
 };
 
-// 4. Create Interview Slots (Auto-generates 10-minute intervals across multi-day ranges)
-export const createInterviewSlots = async (req: Request, res: Response) => {
+// 4. Create Interview Slots (Calendly-style: supports custom duration or single custom block)
+export const createInterviewSlots = async (req: CustomRequest, res: Response) => {
   try {
-    const { interviewerId, domain, meetingLink, startTime, endTime } = req.body; 
+    const admin = req.user as any;
+    const {
+      interviewerId,
+      domain,
+      meetingLink,
+      startTime,
+      endTime,
+      durationMinutes,
+      capacity
+    } = req.body;
+
+    const effectiveInterviewerId = interviewerId || admin?.id;
+    const effectiveDomain = (domain || admin?.domain) as DomainType;
+
+    if (!effectiveInterviewerId || !effectiveDomain) {
+      return res.status(400).json({ success: false, message: 'Missing interviewer or domain information.' });
+    }
 
     const start = new Date(startTime);
     const end = new Date(endTime);
-    const slotsToCreate = [];
 
+    if (isNaN(start.getTime()) || isNaN(end.getTime()) || end <= start) {
+      return res.status(400).json({ success: false, message: 'End time must be after start time.' });
+    }
+
+    const totalRangeMinutes = Math.round((end.getTime() - start.getTime()) / 60000);
+    const slotDuration = Number(durationMinutes) > 0 ? Number(durationMinutes) : totalRangeMinutes;
+
+    const slotsToCreate = [];
     let currentStart = new Date(start);
+
     while (currentStart < end) {
-      const currentEnd = new Date(currentStart.getTime() + 10 * 60000); // +10 minutes
+      const currentEnd = new Date(currentStart.getTime() + slotDuration * 60000);
       if (currentEnd > end) break;
 
       slotsToCreate.push({
-        interviewerId: String(interviewerId),
-        domain: domain as DomainType,
-        meetingLink,
+        interviewerId: String(effectiveInterviewerId),
+        domain: effectiveDomain,
+        meetingLink: meetingLink ? String(meetingLink).trim() : null,
         startTime: new Date(currentStart),
         endTime: new Date(currentEnd),
-        capacity: 1, // Strict exclusive 1 candidate per slot
+        capacity: Number(capacity) > 0 ? Number(capacity) : 1,
       });
 
       currentStart = currentEnd;
     }
 
     if (slotsToCreate.length === 0) {
-      return res.status(400).json({ success: false, message: 'Invalid time range for 10-minute slots.' });
+      return res.status(400).json({
+        success: false,
+        message: `Time window (${totalRangeMinutes} mins) is shorter than the selected slot duration (${slotDuration} mins).`,
+      });
     }
 
     const createdSlots = await prisma.slot.createMany({
       data: slotsToCreate,
     });
 
-    return res.status(201).json({ success: true, message: `Successfully generated ${createdSlots.count} individual 10-minute slots!` });
+    return res.status(201).json({
+      success: true,
+      message: `Successfully created ${createdSlots.count} interview slot(s) (${slotDuration} mins each)!`,
+    });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Server error while creating slots' });
   }
 };
 
 // 5. Get My Schedule (Supports viewing all created slots or only booked ones)
-export const getMySchedule = async (req: Request, res: Response) => {
+export const getMySchedule = async (req: CustomRequest, res: Response) => {
   try {
     const { adminId } = req.params;
-    const { all } = req.query; // Pass ?all=true to see all created slots
+    const { all, domain } = req.query;
 
     const mySchedule = await prisma.slot.findMany({
       where: { 
-        interviewerId: String(adminId),
+        ...(adminId && adminId !== 'ALL' ? { interviewerId: String(adminId) } : {}),
+        ...(domain && domain !== 'ALL' ? { domain: String(domain) as DomainType } : {}),
         ...(all === 'true' ? {} : { bookedCount: { gt: 0 } })
       },
       include: {
@@ -162,14 +235,27 @@ export const getMySchedule = async (req: Request, res: Response) => {
 // 6. Assign Domain Heads without setting a password yet
 export const assignDomainHead = async (req: Request, res: Response) => {
   try {
-    const { emails, domain } = req.body; 
+    const { emails, email, domain } = req.body; 
 
-    if (!emails || !Array.isArray(emails) || emails.length === 0) {
-      return res.status(400).json({ success: false, message: 'Please provide an array of emails.' });
+    // Accept either an array of emails OR a comma-separated string
+    const rawList = Array.isArray(emails)
+      ? emails
+      : typeof emails === 'string'
+      ? emails.split(',')
+      : typeof email === 'string'
+      ? email.split(',')
+      : [];
+
+    const normalizedEmails = rawList
+      .map((e: string) => String(e).trim().toLowerCase())
+      .filter(Boolean);
+
+    if (normalizedEmails.length === 0) {
+      return res.status(400).json({ success: false, message: 'Please provide at least one valid email.' });
     }
 
     const existingAdmins = await prisma.admin.findMany({
-      where: { email: { in: emails } }
+      where: { email: { in: normalizedEmails } }
     });
 
     if (existingAdmins.length > 0) {
@@ -180,9 +266,9 @@ export const assignDomainHead = async (req: Request, res: Response) => {
       });
     }
 
-    const adminsToCreate = emails.map((email: string) => ({
-      email: String(email),
-      role: "DOMAIN_HEAD" as Role, 
+    const adminsToCreate = normalizedEmails.map((em: string) => ({
+      email: em,
+      role: 'DOMAIN_HEAD' as Role, 
       domain: domain as DomainType 
     }));
 
@@ -193,23 +279,55 @@ export const assignDomainHead = async (req: Request, res: Response) => {
     return res.status(201).json({
       success: true,
       message: `Successfully granted domain access to ${createdAdmins.count} head(s).`,
-      assignedEmails: emails
+      assignedEmails: normalizedEmails
     });
   } catch (error) { 
     return res.status(500).json({ success: false, message: 'Server error while assigning domain heads' });
   }
 };
 
-// 7. Create a Form Subsection 
-export const createSubsection = async (req: Request, res: Response) => {
+// 7. Get Domain Form Questions & Subsections
+export const getDomainForm = async (req: CustomRequest, res: Response) => {
   try {
+    const admin = req.user as any;
+    const queryDomain = req.query.domain as string | undefined;
+    const effectiveDomain =
+      admin?.role === 'DOMAIN_HEAD' && admin?.domain
+        ? (admin.domain as DomainType)
+        : queryDomain && queryDomain !== 'ALL'
+        ? (queryDomain as DomainType)
+        : undefined;
+
+    const [subsections, questions] = await Promise.all([
+      prisma.subsection.findMany({
+        where: effectiveDomain ? { domain: effectiveDomain } : undefined,
+        orderBy: { order: 'asc' },
+      }),
+      prisma.question.findMany({
+        where: effectiveDomain ? { domain: effectiveDomain } : undefined,
+        include: { subsection: true },
+        orderBy: { order: 'asc' },
+      }),
+    ]);
+
+    return res.status(200).json({ success: true, data: { subsections, questions } });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Server error fetching domain form' });
+  }
+};
+
+// 8. Create a Form Subsection 
+export const createSubsection = async (req: CustomRequest, res: Response) => {
+  try {
+    const admin = req.user as any;
     const { name, domain, order } = req.body; 
+    const effectiveDomain = (admin?.role === 'DOMAIN_HEAD' && admin?.domain ? admin.domain : domain) as DomainType;
 
     const subsection = await prisma.subsection.create({
       data: { 
         name, 
-        domain: domain as DomainType, 
-        order: order || 0 
+        domain: effectiveDomain, 
+        order: Number(order) || 0 
       }
     });
 
@@ -219,19 +337,22 @@ export const createSubsection = async (req: Request, res: Response) => {
   }
 };
 
-// 8. Create a Question inside a Subsection
-export const createQuestion = async (req: Request, res: Response) => {
+// 9. Create a Question (with maxMarks) inside a Domain / Subsection
+export const createQuestion = async (req: CustomRequest, res: Response) => {
   try {
-    const { text, domain, subsectionId, required, order, maxLength } = req.body;
+    const admin = req.user as any;
+    const { text, domain, subsectionId, required, order, maxLength, maxMarks } = req.body;
+    const effectiveDomain = (admin?.role === 'DOMAIN_HEAD' && admin?.domain ? admin.domain : domain) as DomainType;
 
     const question = await prisma.question.create({
       data: {
         text,
-        domain: domain as DomainType, // Cast to Enum
+        domain: effectiveDomain,
         subsectionId: subsectionId ? String(subsectionId) : null,
-        required: required !== undefined ? required : true,
-        order: order || 0,
-        maxLength: maxLength || 2000
+        required: required !== undefined ? Boolean(required) : true,
+        order: Number(order) || 0,
+        maxLength: Number(maxLength) || 2000,
+        maxMarks: Number(maxMarks) || 10,
       }
     });
 
@@ -241,7 +362,7 @@ export const createQuestion = async (req: Request, res: Response) => {
   }
 };
 
-// 9. Setup Create Admin Account for first time only
+// 10. Setup Create Admin Account for first time only
 export const setupAdminAccount = async (req: Request, res: Response) => {
   try {
     const { email, password, name } = req.body;
@@ -250,8 +371,12 @@ export const setupAdminAccount = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: 'Email and password are required.' });
     }
 
-    // 1. Check if the Root Admin has assigned this email
-    const admin = await prisma.admin.findUnique({ where: { email: String(email) } });
+    const normalizedEmail = String(email).trim().toLowerCase();
+
+    // 1. Check if the Root Admin has assigned this email (case-insensitive check)
+    const allMatching = await prisma.admin.findMany();
+    const admin = allMatching.find(a => a.email.trim().toLowerCase() === normalizedEmail);
+
     if (!admin) {
       return res.status(403).json({ 
         success: false, 
@@ -267,20 +392,21 @@ export const setupAdminAccount = async (req: Request, res: Response) => {
       });
     }
 
-    // 3. Hash the new password and save it against their email
+    // 3. Hash the new password and save it against their record
     const hashedPassword = await bcrypt.hash(String(password), 10);
     const updatedAdmin = await prisma.admin.update({
-      where: { email: String(email) },
+      where: { id: admin.id },
       data: { 
+        email: normalizedEmail,
         password: hashedPassword,
         ...(name ? { name: String(name) } : {})
       }
     });
 
-    // 4. Generate the JWT token so they are logged in immediately after creating the account
+    const secret = process.env.JWT_SECRET || process.env.ADMIN_JWT_SECRET || 'fallback_secret';
     const token = jwt.sign(
       { id: updatedAdmin.id, email: updatedAdmin.email, role: updatedAdmin.role, domain: updatedAdmin.domain }, 
-      process.env.JWT_SECRET || 'fallback_secret', 
+      secret, 
       { expiresIn: '12h' }
     );
 
@@ -288,6 +414,8 @@ export const setupAdminAccount = async (req: Request, res: Response) => {
       success: true, 
       message: 'Account set up successfully',
       token, 
+      id: updatedAdmin.id,
+      email: updatedAdmin.email,
       role: updatedAdmin.role, 
       domain: updatedAdmin.domain 
     });
@@ -296,7 +424,7 @@ export const setupAdminAccount = async (req: Request, res: Response) => {
   }
 };
 
-// 10. Login Admin 
+// 11. Login Admin 
 export const loginAdmin = async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
@@ -305,34 +433,41 @@ export const loginAdmin = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: 'Email and password are required.' });
     }
 
-    // 1. Find the admin
-    const admin = await prisma.admin.findUnique({ where: { email: String(email) } });
+    const normalizedEmail = String(email).trim().toLowerCase();
+    const allMatching = await prisma.admin.findMany();
+    const admin = allMatching.find(a => a.email.trim().toLowerCase() === normalizedEmail);
+
     if (!admin) {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
 
-    // 2. Check if they haven't created their password yet
     if (!admin.password) {
       return res.status(400).json({ 
         success: false, 
-        message: 'Password not set for this account. Please go to Create Account first.' 
+        message: 'Password not set for this account. Please click Create First-Time Password first.' 
       });
     }
 
-    // 3. Check the password
     const isMatch = await bcrypt.compare(String(password), admin.password);
     if (!isMatch) {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
 
-    // 4. Generate the JWT token (Make sure to add JWT_SECRET to your .env file)
+    const secret = process.env.JWT_SECRET || process.env.ADMIN_JWT_SECRET || 'fallback_secret';
     const token = jwt.sign(
       { id: admin.id, email: admin.email, role: admin.role, domain: admin.domain }, 
-      process.env.JWT_SECRET || 'fallback_secret', 
+      secret, 
       { expiresIn: '12h' }
     );
 
-    return res.status(200).json({ success: true, token, role: admin.role, domain: admin.domain });
+    return res.status(200).json({
+      success: true,
+      token,
+      id: admin.id,
+      email: admin.email,
+      role: admin.role,
+      domain: admin.domain
+    });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Server error during login' });
   }
