@@ -433,7 +433,9 @@ export const setupAdminAccount = async (req: Request, res: Response) => {
 
   return res.status(500).json({
     success: false,
-    message: 'Server error while creating question'
+    message: error instanceof Error
+      ? error.message
+      : 'Unknown error while creating question'
   });
 }
 };
