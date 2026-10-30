@@ -38,7 +38,6 @@ export default function AdminPortal() {
 
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
-  const [authName, setAuthName] = useState("");
   const [statusMsg, setStatusMsg] = useState<{
     type: "success" | "error";
     text: string;
@@ -51,6 +50,7 @@ export default function AdminPortal() {
   // 1. Candidates & Review State
   const [filterDomain, setFilterDomain] = useState<string>("TECHNICAL");
   const [candidates, setCandidates] = useState<any[]>([]);
+  const [candidateSearch, setCandidateSearch] = useState("");
   const [selectedApp, setSelectedApp] = useState<any | null>(null);
   const [questionScores, setQuestionScores] = useState<Record<string, number>>(
     {}
@@ -128,7 +128,6 @@ export default function AdminPortal() {
         body: JSON.stringify({
           email: authEmail.trim().toLowerCase(),
           password: authPassword,
-          ...(endpoint === "/setup" && authName ? { name: authName.trim() } : {}),
         }),
       });
       const data = await res.json();
@@ -223,6 +222,19 @@ export default function AdminPortal() {
     (sum, val) => sum + (Number(val) || 0),
     0
   );
+
+  // Search candidates and sort by highest Review 1 marks
+  const displayedCandidates = [...candidates]
+    .filter((app) => {
+      const search = candidateSearch.trim().toLowerCase();
+      if (!search) return true;
+      return (
+        app.user?.name?.toLowerCase().includes(search) ||
+        app.user?.regNumber?.toLowerCase().includes(search) ||
+        app.user?.email?.toLowerCase().includes(search)
+      );
+    })
+    .sort((a, b) => (Number(b.review1Marks) || 0) - (Number(a.review1Marks) || 0));
 
   const handleSaveEvaluation = async () => {
     if (!selectedApp || !token) return;
@@ -440,100 +452,103 @@ export default function AdminPortal() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 p-6">
       <div className="max-w-7xl mx-auto space-y-6">
-        {/* Top Bar */}
-        <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200 flex flex-wrap justify-between items-center gap-4">
-          <div>
-            <h1 className="text-xl font-bold text-slate-900">
-              Recruitment Admin & Evaluation Portal
-            </h1>
-            <p className="text-xs text-slate-500">
-              Domain Form Builder • Per-Question Candidate Grading • Calendly-Style Slot Scheduler
-            </p>
-          </div>
-          {adminUser && (
-            <div className="flex items-center gap-4">
-              <span className="text-xs font-semibold bg-indigo-50 text-indigo-700 px-3 py-1.5 rounded-lg border border-indigo-200">
-                {adminUser.email} ({adminUser.role}
-                {adminUser.domain ? ` - ${adminUser.domain}` : ""})
-              </span>
-              <button
-                onClick={() => {
-                  localStorage.removeItem("admin_token");
-                  setToken(null);
-                  setAdminUser(null);
-                  setSelectedApp(null);
-                }}
-                className="text-xs text-red-600 hover:underline font-semibold"
-              >
-                Logout
-              </button>
-            </div>
-          )}
-        </div>
-
-        {/* Status Alert */}
-        {statusMsg && (
-          <div
-            className={`p-4 rounded-xl text-sm font-medium border ${
-              statusMsg.type === "success"
-                ? "bg-emerald-50 text-emerald-800 border-emerald-200"
-                : "bg-red-50 text-red-800 border-red-200"
-            }`}
-          >
-            {statusMsg.text}
-          </div>
-        )}
-
-        {/* Login / First-Time Setup Screen */}
+        
+        {/* UN-AUTHENTICATED PROFESSIONAL LOGIN SCREEN */}
         {!token ? (
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 max-w-2xl">
-            <h2 className="text-base font-bold mb-1">
-              Admin & Domain Head Authentication
-            </h2>
-            <p className="text-xs text-slate-500 mb-4">
-              If your email was whitelisted by the Root Admin, enter your email and a new password and click{" "}
-              <strong>Create First-Time Password</strong>.
-            </p>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
+          <div className="max-w-md mx-auto mt-16 bg-white p-8 rounded-2xl shadow-sm border border-slate-200">
+            <h1 className="text-2xl font-bold text-center text-slate-900 mb-6">
+              Recruitment Admin Portal
+            </h1>
+            
+            {statusMsg && (
+              <div
+                className={`p-3 mb-6 rounded-lg text-sm font-medium border text-center ${
+                  statusMsg.type === "success"
+                    ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                    : "bg-red-50 text-red-800 border-red-200"
+                }`}
+              >
+                {statusMsg.text}
+              </div>
+            )}
+
+            <div className="space-y-4">
               <input
                 type="email"
                 placeholder="Admin Email"
                 value={authEmail}
                 onChange={(e) => setAuthEmail(e.target.value)}
-                className="border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                className="w-full border border-slate-300 rounded-lg px-4 py-2.5 text-sm"
               />
               <input
                 type="password"
                 placeholder="Password"
                 value={authPassword}
                 onChange={(e) => setAuthPassword(e.target.value)}
-                className="border border-slate-300 rounded-lg px-3 py-2 text-sm"
-              />
-              <input
-                type="text"
-                placeholder="Your Name (for first-time setup)"
-                value={authName}
-                onChange={(e) => setAuthName(e.target.value)}
-                className="border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                className="w-full border border-slate-300 rounded-lg px-4 py-2.5 text-sm"
               />
             </div>
-            <div className="flex flex-wrap gap-3">
+            
+            <div className="flex flex-col gap-3 pt-6">
               <button
                 onClick={() => handleAuth("/login")}
-                className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-5 py-2 rounded-lg"
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-5 py-2.5 rounded-lg transition"
               >
                 Login
               </button>
               <button
                 onClick={() => handleAuth("/setup")}
-                className="bg-purple-600 hover:bg-purple-700 text-white text-sm font-semibold px-5 py-2 rounded-lg"
+                className="w-full bg-purple-600 hover:bg-purple-700 text-white text-sm font-semibold px-5 py-2.5 rounded-lg transition"
               >
-                Create First-Time Password (/setup)
+                Create First-Time Password
               </button>
             </div>
           </div>
         ) : (
+          
+          /* AUTHENTICATED DASHBOARD SCREEN */
           <>
+            {/* Dashboard Top Bar */}
+            <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200 flex flex-wrap justify-between items-center gap-4">
+              <div>
+                <h1 className="text-xl font-bold text-slate-900">
+                  Recruitment Admin & Evaluation Portal
+                </h1>
+              </div>
+              {adminUser && (
+                <div className="flex items-center gap-4">
+                  <span className="text-xs font-semibold bg-indigo-50 text-indigo-700 px-3 py-1.5 rounded-lg border border-indigo-200">
+                    {adminUser.email} ({adminUser.role}
+                    {adminUser.domain ? ` - ${adminUser.domain}` : ""})
+                  </span>
+                  <button
+                    onClick={() => {
+                      localStorage.removeItem("admin_token");
+                      setToken(null);
+                      setAdminUser(null);
+                      setSelectedApp(null);
+                    }}
+                    className="text-xs text-red-600 hover:underline font-semibold"
+                  >
+                    Logout
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Status Alert for Dashboard */}
+            {statusMsg && (
+              <div
+                className={`p-4 rounded-xl text-sm font-medium border ${
+                  statusMsg.type === "success"
+                    ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                    : "bg-red-50 text-red-800 border-red-200"
+                }`}
+              >
+                {statusMsg.text}
+              </div>
+            )}
+
             {/* Navigation Tabs */}
             <div className="flex flex-wrap gap-2 border-b border-slate-200 pb-3">
               <button
@@ -600,6 +615,7 @@ export default function AdminPortal() {
                     <h2 className="font-bold text-base">
                       Submitted Applications
                     </h2>
+
                     <button
                       onClick={() => fetchCandidates(filterDomain)}
                       className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold px-3 py-1.5 rounded-lg"
@@ -607,6 +623,14 @@ export default function AdminPortal() {
                       Refresh
                     </button>
                   </div>
+
+                  <input
+                    type="text"
+                    placeholder="Search by name, registration number or email..."
+                    value={candidateSearch}
+                    onChange={(e) => setCandidateSearch(e.target.value)}
+                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                  />
 
                   {adminUser?.role === "ROOT_ADMIN" && (
                     <div className="flex items-center gap-2">
@@ -630,12 +654,12 @@ export default function AdminPortal() {
                   )}
 
                   <div className="space-y-2 max-h-[550px] overflow-y-auto">
-                    {candidates.length === 0 ? (
+                    {displayedCandidates.length === 0 ? (
                       <p className="text-xs text-slate-500 py-8 text-center">
-                        No submitted applications found for this domain yet.
+                        No submitted applications found.
                       </p>
                     ) : (
-                      candidates.map((app) => (
+                      displayedCandidates.map((app) => (
                         <div
                           key={app.id}
                           onClick={() => handleSelectCandidate(app)}
