@@ -256,12 +256,19 @@ export default function AdminPortal() {
     })
     .sort((a, b) => (Number(b.review1Marks) || 0) - (Number(a.review1Marks) || 0));
 
-  // Review 2: Filter candidates in interview/slot stages & sort by booked slot or marks
+  // Review 2: Domain Heads ONLY see candidates who booked THEIR specific slots
+  // Root Admin sees all interview/slot candidates across the selected domain
   const interviewCandidates = [...candidates]
-    .filter((app) =>
-      ["SLOT_CHOOSING", "INTERVIEW", "SELECTED", "REJECTED"].includes(app.stage) ||
-      Boolean(app.booking)
-    )
+    .filter((app) => {
+      if (adminUser?.role === "ROOT_ADMIN") {
+        return (
+          ["SLOT_CHOOSING", "INTERVIEW", "SELECTED", "REJECTED"].includes(app.stage) ||
+          Boolean(app.booking)
+        );
+      }
+      // Strict per-interviewer isolation for Domain Heads
+      return app.booking?.slot?.interviewerId === adminUser?.id;
+    })
     .filter((app) => {
       const search = review2Search.trim().toLowerCase();
       if (!search) return true;
@@ -272,11 +279,19 @@ export default function AdminPortal() {
       );
     })
     .sort((a, b) => {
-      // Prioritize candidates who have booked a slot
-      if (a.booking && !b.booking) return -1;
-      if (!a.booking && b.booking) return 1;
-      return (Number(b.review2Marks) || Number(b.review1Marks) || 0) -
-             (Number(a.review2Marks) || Number(a.review1Marks) || 0);
+      // Sort chronologically by their booked interview time first
+      const timeA = a.booking?.slot?.startTime
+        ? new Date(a.booking.slot.startTime).getTime()
+        : Infinity;
+      const timeB = b.booking?.slot?.startTime
+        ? new Date(b.booking.slot.startTime).getTime()
+        : Infinity;
+      if (timeA !== timeB) return timeA - timeB;
+
+      return (
+        (Number(b.review2Marks) || Number(b.review1Marks) || 0) -
+        (Number(a.review2Marks) || Number(a.review1Marks) || 0)
+      );
     });
 
   // Save Review 1 Evaluation
@@ -659,7 +674,7 @@ export default function AdminPortal() {
                     : "bg-white text-slate-700 border border-slate-200"
                 }`}
               >
-                2. Review 2: Interview & Final Selection ({interviewCandidates.length})
+                2. Review 2: My Interviewees ({interviewCandidates.length})
               </button>
 
               <button
@@ -960,13 +975,15 @@ export default function AdminPortal() {
               </div>
             )}
 
-            {/* TAB 2: REVIEW 2 (INTERVIEW & FINAL SELECTION) */}
+            {/* TAB 2: REVIEW 2 (MY INTERVIEWEES & FINAL SELECTION) */}
             {activeTab === "review2" && (
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                 <div className="lg:col-span-5 bg-white p-5 rounded-xl shadow-sm border border-slate-200 space-y-4">
                   <div className="flex justify-between items-center">
                     <h2 className="font-bold text-base">
-                      Interview & Slot Candidates
+                      {adminUser?.role === "ROOT_ADMIN"
+                        ? "All Interview Candidates"
+                        : "My Booked Interviewees"}
                     </h2>
                     <button
                       onClick={() => fetchCandidates(filterDomain)}
@@ -978,7 +995,7 @@ export default function AdminPortal() {
 
                   <input
                     type="text"
-                    placeholder="Search interview candidates..."
+                    placeholder="Search your interviewees..."
                     value={review2Search}
                     onChange={(e) => setReview2Search(e.target.value)}
                     className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
@@ -1008,7 +1025,9 @@ export default function AdminPortal() {
                   <div className="space-y-2 max-h-[550px] overflow-y-auto">
                     {interviewCandidates.length === 0 ? (
                       <p className="text-xs text-slate-500 py-8 text-center">
-                        No candidates have been moved to SLOT_CHOOSING or INTERVIEW yet.
+                        {adminUser?.role === "ROOT_ADMIN"
+                          ? "No candidates have been moved to SLOT_CHOOSING or INTERVIEW yet."
+                          : "No candidates have booked your interview slots yet."}
                       </p>
                     ) : (
                       interviewCandidates.map((app) => (

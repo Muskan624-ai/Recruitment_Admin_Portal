@@ -35,7 +35,15 @@ export const getAllApplicants = async (req: CustomRequest, res: Response) => {
           },
         },
         booking: {
-          include: { slot: true },
+          include: {
+            slot: {
+              include: {
+                interviewer: {
+                  select: { id: true, name: true, email: true },
+                },
+              },
+            },
+          },
         },
       },
       orderBy: { user: { regNumber: 'asc' } },
