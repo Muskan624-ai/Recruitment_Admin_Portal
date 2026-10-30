@@ -20,9 +20,13 @@ const DOMAINS = [
   "EDITORIAL",
 ];
 
-const ADMIN_ALLOWED_STAGES = [
+const REVIEW1_ALLOWED_STAGES = [
   "SHORTLISTED",
   "SLOT_CHOOSING",
+  "REJECTED",
+];
+
+const REVIEW2_ALLOWED_STAGES = [
   "SELECTED",
   "REJECTED",
 ];
@@ -44,10 +48,10 @@ export default function AdminPortal() {
   } | null>(null);
 
   const [activeTab, setActiveTab] = useState<
-    "candidates" | "questions" | "slots" | "root"
+    "candidates" | "review2" | "questions" | "slots" | "root"
   >("candidates");
 
-  // 1. Candidates & Review State
+  // 1. Candidates & Review 1 State
   const [filterDomain, setFilterDomain] = useState<string>("TECHNICAL");
   const [candidates, setCandidates] = useState<any[]>([]);
   const [candidateSearch, setCandidateSearch] = useState("");
@@ -58,7 +62,14 @@ export default function AdminPortal() {
   const [reviewComments, setReviewComments] = useState("");
   const [stageDecision, setStageDecision] = useState<string>("SHORTLISTED");
 
-  // 2. Form Questions & Subsections State
+  // 2. Review 2 (Interview Evaluation) State
+  const [review2Search, setReview2Search] = useState("");
+  const [selectedInterviewApp, setSelectedInterviewApp] = useState<any | null>(null);
+  const [review2Marks, setReview2Marks] = useState<number>(0);
+  const [review2Comments, setReview2Comments] = useState<string>("");
+  const [review2StageDecision, setReview2StageDecision] = useState<string>("SELECTED");
+
+  // 3. Form Questions & Subsections State
   const [questionDomain, setQuestionDomain] = useState<string>("TECHNICAL");
   const [subsectionsList, setSubsectionsList] = useState<any[]>([]);
   const [questionsList, setQuestionsList] = useState<any[]>([]);
@@ -68,7 +79,7 @@ export default function AdminPortal() {
   const [newQuestionMarks, setNewQuestionMarks] = useState<number>(10);
   const [newQuestionOrder, setNewQuestionOrder] = useState<number>(1);
 
-  // 3. Calendly-Style Interview Slots State
+  // 4. Calendly-Style Interview Slots State
   const [slotDomain, setSlotDomain] = useState<string>("TECHNICAL");
   const [slotDate, setSlotDate] = useState<string>("");
   const [slotStartTime, setSlotStartTime] = useState<string>("10:00");
@@ -77,7 +88,7 @@ export default function AdminPortal() {
   const [slotMeetingLink, setSlotMeetingLink] = useState<string>("");
   const [slotsList, setSlotsList] = useState<any[]>([]);
 
-  // 4. Root Admin Whitelist State
+  // 5. Root Admin Whitelist State
   const [assignDomain, setAssignDomain] = useState<string>("TECHNICAL");
   const [assignEmails, setAssignEmails] = useState<string>("");
 
@@ -184,7 +195,7 @@ export default function AdminPortal() {
     setSelectedApp(app);
     setReviewComments(app.review1Comments || "");
     setStageDecision(
-      ADMIN_ALLOWED_STAGES.includes(app.stage) ? app.stage : "SHORTLISTED"
+      REVIEW1_ALLOWED_STAGES.includes(app.stage) ? app.stage : "SHORTLISTED"
     );
 
     let answersList = app.user?.answers || [];
@@ -218,12 +229,21 @@ export default function AdminPortal() {
     setQuestionScores(scores);
   };
 
+  const handleSelectInterviewCandidate = (app: any) => {
+    setSelectedInterviewApp(app);
+    setReview2Marks(app.review2Marks ?? 0);
+    setReview2Comments(app.review2Comments || "");
+    setReview2StageDecision(
+      REVIEW2_ALLOWED_STAGES.includes(app.stage) ? app.stage : "SELECTED"
+    );
+  };
+
   const totalCalculatedMarks = Object.values(questionScores).reduce(
     (sum, val) => sum + (Number(val) || 0),
     0
   );
 
-  // Search candidates and sort by highest Review 1 marks
+  // Review 1: Search candidates and sort by highest Review 1 marks
   const displayedCandidates = [...candidates]
     .filter((app) => {
       const search = candidateSearch.trim().toLowerCase();
@@ -236,6 +256,30 @@ export default function AdminPortal() {
     })
     .sort((a, b) => (Number(b.review1Marks) || 0) - (Number(a.review1Marks) || 0));
 
+  // Review 2: Filter candidates in interview/slot stages & sort by booked slot or marks
+  const interviewCandidates = [...candidates]
+    .filter((app) =>
+      ["SLOT_CHOOSING", "INTERVIEW", "SELECTED", "REJECTED"].includes(app.stage) ||
+      Boolean(app.booking)
+    )
+    .filter((app) => {
+      const search = review2Search.trim().toLowerCase();
+      if (!search) return true;
+      return (
+        app.user?.name?.toLowerCase().includes(search) ||
+        app.user?.regNumber?.toLowerCase().includes(search) ||
+        app.user?.email?.toLowerCase().includes(search)
+      );
+    })
+    .sort((a, b) => {
+      // Prioritize candidates who have booked a slot
+      if (a.booking && !b.booking) return -1;
+      if (!a.booking && b.booking) return 1;
+      return (Number(b.review2Marks) || Number(b.review1Marks) || 0) -
+             (Number(a.review2Marks) || Number(a.review1Marks) || 0);
+    });
+
+  // Save Review 1 Evaluation
   const handleSaveEvaluation = async () => {
     if (!selectedApp || !token) return;
     try {
@@ -259,7 +303,8 @@ export default function AdminPortal() {
             review1Marks: totalCalculatedMarks,
             review1Comments: reviewComments,
             review1Passed:
-              stageDecision === "SHORTLISTED" || stageDecision === "SELECTED",
+              stageDecision === "SHORTLISTED" ||
+              stageDecision === "SLOT_CHOOSING",
             answerScores,
           }),
         }
@@ -268,14 +313,51 @@ export default function AdminPortal() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.message || "Failed to save evaluation");
 
-      notify("success", "Question marks & stage decision saved!");
+      notify("success", "Review 1 marks & stage decision saved!");
       fetchCandidates(filterDomain);
     } catch (err: any) {
       notify("error", err.message);
     }
   };
 
-  // 2. Fetch Form Questions & Subsections
+  // Save Review 2 (Interview) Evaluation
+  const handleSaveReview2 = async () => {
+    if (!selectedInterviewApp || !token) return;
+    try {
+      const res = await fetch(
+        `${API_BASE}/applicants/${selectedInterviewApp.id}/review`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            stage: review2StageDecision,
+            review2Marks: Number(review2Marks) || 0,
+            review2Comments: review2Comments,
+            review2Passed: review2StageDecision === "SELECTED",
+          }),
+        }
+      );
+
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.message || "Failed to save interview evaluation");
+
+      notify("success", `Interview evaluation saved! Candidate marked as ${review2StageDecision}.`);
+      fetchCandidates(filterDomain);
+      setSelectedInterviewApp({
+        ...selectedInterviewApp,
+        stage: review2StageDecision,
+        review2Marks: Number(review2Marks) || 0,
+        review2Comments,
+      });
+    } catch (err: any) {
+      notify("error", err.message);
+    }
+  };
+
+  // 3. Fetch Form Questions & Subsections
   const fetchFormQuestions = async (dom = questionDomain) => {
     if (!token) return;
     try {
@@ -350,7 +432,7 @@ export default function AdminPortal() {
     }
   };
 
-  // 3. Fetch Slots
+  // 4. Fetch Slots
   const fetchSlots = async (dom = slotDomain) => {
     if (!token || !adminUser?.id) return;
     try {
@@ -411,7 +493,7 @@ export default function AdminPortal() {
     }
   };
 
-  // 4. Root Admin Whitelist
+  // 5. Root Admin Whitelist
   const handleAssignDomainHeads = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!token || !assignEmails.trim()) return;
@@ -527,6 +609,7 @@ export default function AdminPortal() {
                       setToken(null);
                       setAdminUser(null);
                       setSelectedApp(null);
+                      setSelectedInterviewApp(null);
                     }}
                     className="text-xs text-red-600 hover:underline font-semibold"
                   >
@@ -562,7 +645,21 @@ export default function AdminPortal() {
                     : "bg-white text-slate-700 border border-slate-200"
                 }`}
               >
-                1. Candidate Review & Grading ({candidates.length})
+                1. Review 1: Form Grading ({candidates.length})
+              </button>
+
+              <button
+                onClick={() => {
+                  setActiveTab("review2");
+                  fetchCandidates(filterDomain);
+                }}
+                className={`px-4 py-2 rounded-lg text-sm font-semibold ${
+                  activeTab === "review2"
+                    ? "bg-slate-900 text-white"
+                    : "bg-white text-slate-700 border border-slate-200"
+                }`}
+              >
+                2. Review 2: Interview & Final Selection ({interviewCandidates.length})
               </button>
 
               <button
@@ -576,7 +673,7 @@ export default function AdminPortal() {
                     : "bg-white text-slate-700 border border-slate-200"
                 }`}
               >
-                2. Form Questions & Marks
+                3. Form Questions & Marks
               </button>
 
               <button
@@ -590,7 +687,7 @@ export default function AdminPortal() {
                     : "bg-white text-slate-700 border border-slate-200"
                 }`}
               >
-                3. Interview Slots (Calendly Style)
+                4. Interview Slots (Calendly Style)
               </button>
 
               {adminUser?.role === "ROOT_ADMIN" && (
@@ -602,12 +699,12 @@ export default function AdminPortal() {
                       : "bg-white text-indigo-700 border border-indigo-200"
                   }`}
                 >
-                  4. Whitelist Domain Heads
+                  5. Whitelist Domain Heads
                 </button>
               )}
             </div>
 
-            {/* TAB 1: CANDIDATE REVIEW */}
+            {/* TAB 1: REVIEW 1 (FORM EVALUATION) */}
             {activeTab === "candidates" && (
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                 <div className="lg:col-span-5 bg-white p-5 rounded-xl shadow-sm border border-slate-200 space-y-4">
@@ -687,7 +784,7 @@ export default function AdminPortal() {
                             {app.review1Marks !== null &&
                               app.review1Marks !== undefined && (
                                 <span className="font-semibold text-emerald-700">
-                                  Marks: {app.review1Marks}
+                                  Review 1 Marks: {app.review1Marks}
                                 </span>
                               )}
                           </div>
@@ -699,7 +796,7 @@ export default function AdminPortal() {
 
                 <div className="lg:col-span-7 bg-white p-5 rounded-xl shadow-sm border border-slate-200">
                   <h2 className="font-bold text-base border-b border-slate-200 pb-3 mb-4">
-                    Candidate Form Evaluation
+                    Review 1: Candidate Form Evaluation
                   </h2>
 
                   {!selectedApp ? (
@@ -819,33 +916,33 @@ export default function AdminPortal() {
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-3 border-t border-slate-200">
                         <div>
                           <label className="block text-xs font-semibold text-slate-700 mb-1">
-                            Stage Decision
+                            Review 1 Stage Decision
                           </label>
                           <select
                             value={stageDecision}
                             onChange={(e) => setStageDecision(e.target.value)}
                             className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs font-semibold"
                           >
-                            {ADMIN_ALLOWED_STAGES.map((st) => (
+                            {REVIEW1_ALLOWED_STAGES.map((st) => (
                               <option key={st} value={st}>
                                 {st}
                               </option>
                             ))}
                           </select>
                           <p className="text-[11px] text-slate-400 mt-1">
-                            Candidates automatically move to INTERVIEW when they book a slot.
+                            Select SLOT_CHOOSING to invite the candidate to book an interview slot.
                           </p>
                         </div>
 
                         <div>
                           <label className="block text-xs font-semibold text-slate-700 mb-1">
-                            Reviewer Comments
+                            Review 1 Comments
                           </label>
                           <textarea
                             rows={2}
                             value={reviewComments}
                             onChange={(e) => setReviewComments(e.target.value)}
-                            placeholder="Overall evaluation feedback..."
+                            placeholder="Form evaluation feedback..."
                             className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs"
                           />
                         </div>
@@ -855,7 +952,7 @@ export default function AdminPortal() {
                         onClick={handleSaveEvaluation}
                         className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm py-2.5 rounded-lg"
                       >
-                        Save Question Marks & Update Stage
+                        Save Question Marks & Promote Stage
                       </button>
                     </div>
                   )}
@@ -863,7 +960,296 @@ export default function AdminPortal() {
               </div>
             )}
 
-            {/* TAB 2: DOMAIN FORM QUESTIONS & MARKS BUILDER */}
+            {/* TAB 2: REVIEW 2 (INTERVIEW & FINAL SELECTION) */}
+            {activeTab === "review2" && (
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                <div className="lg:col-span-5 bg-white p-5 rounded-xl shadow-sm border border-slate-200 space-y-4">
+                  <div className="flex justify-between items-center">
+                    <h2 className="font-bold text-base">
+                      Interview & Slot Candidates
+                    </h2>
+                    <button
+                      onClick={() => fetchCandidates(filterDomain)}
+                      className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold px-3 py-1.5 rounded-lg"
+                    >
+                      Refresh
+                    </button>
+                  </div>
+
+                  <input
+                    type="text"
+                    placeholder="Search interview candidates..."
+                    value={review2Search}
+                    onChange={(e) => setReview2Search(e.target.value)}
+                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                  />
+
+                  {adminUser?.role === "ROOT_ADMIN" && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-slate-600">Domain:</span>
+                      <select
+                        value={filterDomain}
+                        onChange={(e) => {
+                          setFilterDomain(e.target.value);
+                          fetchCandidates(e.target.value);
+                        }}
+                        className="border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs"
+                      >
+                        <option value="ALL">ALL DOMAINS</option>
+                        {DOMAINS.map((d) => (
+                          <option key={d} value={d}>
+                            {d}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  <div className="space-y-2 max-h-[550px] overflow-y-auto">
+                    {interviewCandidates.length === 0 ? (
+                      <p className="text-xs text-slate-500 py-8 text-center">
+                        No candidates have been moved to SLOT_CHOOSING or INTERVIEW yet.
+                      </p>
+                    ) : (
+                      interviewCandidates.map((app) => (
+                        <div
+                          key={app.id}
+                          onClick={() => handleSelectInterviewCandidate(app)}
+                          className={`p-3.5 rounded-lg border cursor-pointer transition ${
+                            selectedInterviewApp?.id === app.id
+                              ? "border-indigo-600 bg-indigo-50/40"
+                              : "border-slate-200 hover:bg-slate-50"
+                          }`}
+                        >
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <p className="font-semibold text-sm">
+                                {app.user?.name || "Candidate"}
+                              </p>
+                              <p className="text-xs text-slate-500">
+                                {app.user?.regNumber} • {app.user?.email}
+                              </p>
+                            </div>
+                            <span
+                              className={`text-[11px] font-semibold px-2 py-0.5 rounded ${
+                                app.stage === "INTERVIEW"
+                                  ? "bg-amber-100 text-amber-800"
+                                  : app.stage === "SELECTED"
+                                  ? "bg-emerald-100 text-emerald-800"
+                                  : app.stage === "REJECTED"
+                                  ? "bg-red-100 text-red-800"
+                                  : "bg-blue-100 text-blue-800"
+                              }`}
+                            >
+                              {app.stage}
+                            </span>
+                          </div>
+
+                          {/* Booked Slot Badge on Card */}
+                          {app.booking?.slot ? (
+                            <div className="mt-2 text-[11px] bg-emerald-50 text-emerald-800 px-2.5 py-1 rounded border border-emerald-200 font-medium">
+                              Slot Booked:{" "}
+                              {new Date(app.booking.slot.startTime).toLocaleDateString()} at{" "}
+                              {new Date(app.booking.slot.startTime).toLocaleTimeString([], {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })}
+                            </div>
+                          ) : (
+                            <div className="mt-2 text-[11px] text-amber-600 font-medium">
+                              Waiting for candidate to book a slot...
+                            </div>
+                          )}
+
+                          <div className="mt-2 flex justify-between items-center text-xs text-slate-500">
+                            <span>R1 Marks: {app.review1Marks ?? "N/A"}</span>
+                            {app.review2Marks !== null &&
+                              app.review2Marks !== undefined && (
+                                <span className="font-semibold text-indigo-700">
+                                  Interview Marks: {app.review2Marks}
+                                </span>
+                              )}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                {/* Right Panel: Review 2 Evaluation */}
+                <div className="lg:col-span-7 bg-white p-5 rounded-xl shadow-sm border border-slate-200">
+                  <h2 className="font-bold text-base border-b border-slate-200 pb-3 mb-4">
+                    Review 2: Interview Grading & Final Selection
+                  </h2>
+
+                  {!selectedInterviewApp ? (
+                    <p className="text-xs text-slate-500 py-12 text-center">
+                      Select a candidate on the left to view their booked slot, conduct their interview, and enter final marks.
+                    </p>
+                  ) : (
+                    <div className="space-y-5">
+                      {/* Candidate Info */}
+                      <div className="bg-slate-50 p-4 rounded-lg border border-slate-200 grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
+                        <div>
+                          <span className="text-slate-400 block">Candidate Name</span>
+                          <span className="font-semibold text-slate-800">
+                            {selectedInterviewApp.user?.name}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 block">Registration Number</span>
+                          <span className="font-semibold text-slate-800">
+                            {selectedInterviewApp.user?.regNumber}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 block">Phone</span>
+                          <span className="font-semibold text-slate-800">
+                            {selectedInterviewApp.user?.phone || "N/A"}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 block">Domain</span>
+                          <span className="font-semibold text-indigo-700">
+                            {selectedInterviewApp.domain}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 block">Current Stage</span>
+                          <span className="font-semibold text-slate-800">
+                            {selectedInterviewApp.stage}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 block">Review 1 Score</span>
+                          <span className="font-semibold text-emerald-700">
+                            {selectedInterviewApp.review1Marks ?? 0} Marks
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Booked Slot Details Box */}
+                      <div className="p-4 rounded-lg border border-indigo-200 bg-indigo-50/50 space-y-1">
+                        <h3 className="text-xs font-bold text-indigo-900">
+                          Booked Interview Slot
+                        </h3>
+                        {selectedInterviewApp.booking?.slot ? (
+                          <div className="text-xs text-slate-700 space-y-1">
+                            <p className="font-semibold">
+                              {new Date(
+                                selectedInterviewApp.booking.slot.startTime
+                              ).toLocaleDateString()}{" "}
+                              •{" "}
+                              {new Date(
+                                selectedInterviewApp.booking.slot.startTime
+                              ).toLocaleTimeString([], {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })}{" "}
+                              –{" "}
+                              {new Date(
+                                selectedInterviewApp.booking.slot.endTime
+                              ).toLocaleTimeString([], {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })}
+                            </p>
+                            {selectedInterviewApp.booking.slot.meetingLink && (
+                              <a
+                                href={selectedInterviewApp.booking.slot.meetingLink}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-block text-blue-600 font-semibold hover:underline"
+                              >
+                                Join Meeting: {selectedInterviewApp.booking.slot.meetingLink}
+                              </a>
+                            )}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-slate-500 italic">
+                            This candidate has not booked an interview slot yet.
+                          </p>
+                        )}
+                      </div>
+
+                      {/* Review 1 Summary Reference */}
+                      {selectedInterviewApp.review1Comments && (
+                        <div className="p-3.5 rounded-lg border border-slate-200 bg-slate-50 text-xs">
+                          <span className="font-semibold text-slate-600 block mb-1">
+                            Review 1 Comments:
+                          </span>
+                          <p className="text-slate-800 whitespace-pre-wrap">
+                            {selectedInterviewApp.review1Comments}
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Review 2 Grading Controls */}
+                      <div className="space-y-4 pt-3 border-t border-slate-200">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          <div>
+                            <label className="block text-xs font-semibold text-slate-700 mb-1">
+                              Interview Marks (Review 2 Score)
+                            </label>
+                            <input
+                              type="number"
+                              min={0}
+                              max={100}
+                              value={review2Marks}
+                              onChange={(e) =>
+                                setReview2Marks(Number(e.target.value))
+                              }
+                              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs font-semibold"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="block text-xs font-semibold text-slate-700 mb-1">
+                              Final Selection Decision
+                            </label>
+                            <select
+                              value={review2StageDecision}
+                              onChange={(e) =>
+                                setReview2StageDecision(e.target.value)
+                              }
+                              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs font-semibold"
+                            >
+                              {REVIEW2_ALLOWED_STAGES.map((st) => (
+                                <option key={st} value={st}>
+                                  {st}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-semibold text-slate-700 mb-1">
+                            Interview Feedback & Comments (Review 2)
+                          </label>
+                          <textarea
+                            rows={3}
+                            value={review2Comments}
+                            onChange={(e) => setReview2Comments(e.target.value)}
+                            placeholder="Enter interview notes, strengths, and final evaluation remarks..."
+                            className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs"
+                          />
+                        </div>
+
+                        <button
+                          onClick={handleSaveReview2}
+                          className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-sm py-2.5 rounded-lg"
+                        >
+                          Save Interview Marks & Finalize Decision
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* TAB 3: DOMAIN FORM QUESTIONS & MARKS BUILDER */}
             {activeTab === "questions" && (
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                 <div className="lg:col-span-5 space-y-6">
@@ -1050,7 +1436,7 @@ export default function AdminPortal() {
               </div>
             )}
 
-            {/* TAB 3: CALENDLY-STYLE INTERVIEW SLOTS */}
+            {/* TAB 4: CALENDLY-STYLE INTERVIEW SLOTS */}
             {activeTab === "slots" && (
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                 <div className="lg:col-span-5 bg-white p-5 rounded-xl shadow-sm border border-slate-200">
@@ -1214,16 +1600,23 @@ export default function AdminPortal() {
                               <p className="text-[11px] text-emerald-700 font-semibold mt-1">
                                 Booked by:{" "}
                                 {s.bookings
-                                  .map(
-                                    (b: any) =>
-                                      b.application?.user?.name ||
-                                      b.application?.user?.email
-                                  )
+                                  .map((b: any) => {
+                                    const u = b.application?.user;
+                                    return u
+                                      ? `${u.name} (${u.regNumber || u.email})`
+                                      : "Candidate";
+                                  })
                                   .join(", ")}
                               </p>
                             )}
                           </div>
-                          <span className="text-xs font-semibold px-2.5 py-1 rounded bg-slate-100 text-slate-700 shrink-0">
+                          <span
+                            className={`text-xs font-semibold px-2.5 py-1 rounded shrink-0 ${
+                              s.bookedCount > 0
+                                ? "bg-emerald-100 text-emerald-800"
+                                : "bg-slate-100 text-slate-700"
+                            }`}
+                          >
                             Booked: {s.bookedCount} / {s.capacity}
                           </span>
                         </div>
@@ -1234,7 +1627,7 @@ export default function AdminPortal() {
               </div>
             )}
 
-            {/* TAB 4: ROOT ADMIN WHITELIST */}
+            {/* TAB 5: ROOT ADMIN WHITELIST */}
             {activeTab === "root" && adminUser?.role === "ROOT_ADMIN" && (
               <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 max-w-xl">
                 <h2 className="font-bold text-base mb-1">
