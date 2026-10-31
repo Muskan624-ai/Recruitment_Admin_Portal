@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { PrismaClient, DomainType, Role } from '@prisma/client';
+import { PrismaClient, DomainType, Role, Stage } from '@prisma/client';
 import { changeStage } from '../utils/adminRules';
 import { CustomRequest } from '../middleware/authMiddleware';
 import { sendShortlistEmail } from '../emailer';
@@ -8,7 +8,7 @@ import jwt from 'jsonwebtoken';
 
 const prisma = new PrismaClient();
 
-// Helper delay to respect Gmail rate limits during batch sends (matches batchTest.js)
+// Helper delay to respect Gmail rate limits during batch sends
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // 1. Fetch all submitted applicants
@@ -95,7 +95,7 @@ export const getApplicantById = async (req: Request, res: Response) => {
   }
 };
 
-// 3. Update applicant review (Review 1 saves toggle & marks quietly; Review 2 updates final interview stage)
+// 3. Update applicant review (Review 1 & Review 2 Toggles + Marks)
 export const updateApplicantReview = async (req: CustomRequest, res: Response) => {
   try {
     const { applicationId } = req.params;
@@ -121,6 +121,7 @@ export const updateApplicantReview = async (req: CustomRequest, res: Response) =
 
     const currentApp = await prisma.application.findUnique({
       where: { id: String(applicationId) },
+      include: { booking: true },
     });
 
     if (!currentApp) {
@@ -141,14 +142,24 @@ export const updateApplicantReview = async (req: CustomRequest, res: Response) =
       );
     }
 
+    // If stage is explicitly passed (e.g. SELECTED / REJECTED toggle in Review 2),
+    // update stage directly if the candidate has a booked slot so we don't accidentally
+    // delete their SlotBooking and make them disappear from Review 2!
     if (stage && stage !== currentApp.stage) {
-      try {
-        await changeStage(String(applicationId), stage, admin as any);
-      } catch {
+      if (currentApp.booking && (stage === 'SELECTED' || stage === 'REJECTED')) {
         await prisma.application.update({
           where: { id: String(applicationId) },
-          data: { stage },
+          data: { stage: stage as Stage },
         });
+      } else {
+        try {
+          await changeStage(String(applicationId), stage as Stage, admin as any);
+        } catch {
+          await prisma.application.update({
+            where: { id: String(applicationId) },
+            data: { stage: stage as Stage },
+          });
+        }
       }
     }
 
@@ -494,6 +505,55 @@ export const getMySchedule = async (req: CustomRequest, res: Response) => {
     return res.status(500).json({
       success: false,
       message: 'Server error fetching schedule',
+    });
+  }
+};
+
+// 5B. Delete an Interview Slot
+export const deleteInterviewSlot = async (req: CustomRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const admin = req.user as any;
+
+    const slot = await prisma.slot.findUnique({
+      where: { id: String(id) },
+      include: { bookings: true },
+    });
+
+    if (!slot) {
+      return res.status(404).json({
+        success: false,
+        message: 'Slot not found.',
+      });
+    }
+
+    if (admin?.role !== 'ROOT_ADMIN' && slot.interviewerId !== admin?.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'You can only delete slots that you created.',
+      });
+    }
+
+    if (slot.bookings.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot delete this slot because a candidate has already booked it.',
+      });
+    }
+
+    await prisma.slot.delete({
+      where: { id: String(id) },
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Slot deleted successfully.',
+    });
+  } catch (error) {
+    console.error('deleteInterviewSlot failed:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error while deleting slot.',
     });
   }
 };

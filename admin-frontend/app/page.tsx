@@ -20,8 +20,6 @@ const DOMAINS = [
   "EDITORIAL",
 ];
 
-const REVIEW2_ALLOWED_STAGES = ["SELECTED", "REJECTED"];
-
 export default function AdminPortal() {
   const [token, setToken] = useState<string | null>(null);
   const [adminUser, setAdminUser] = useState<{
@@ -53,7 +51,6 @@ export default function AdminPortal() {
   const [newQuestionMarks, setNewQuestionMarks] = useState<number>(10);
   const [newQuestionOrder, setNewQuestionOrder] = useState<number>(1);
 
-  // Editing Question State
   const [editingQuestionId, setEditingQuestionId] = useState<string | null>(null);
   const [editQuestionText, setEditQuestionText] = useState<string>("");
   const [editQuestionMarks, setEditQuestionMarks] = useState<number>(10);
@@ -74,7 +71,7 @@ export default function AdminPortal() {
   const [selectedInterviewApp, setSelectedInterviewApp] = useState<any | null>(null);
   const [review2Marks, setReview2Marks] = useState<number>(0);
   const [review2Comments, setReview2Comments] = useState<string>("");
-  const [review2StageDecision, setReview2StageDecision] = useState<string>("SELECTED");
+  const [isFinalSelectedToggle, setIsFinalSelectedToggle] = useState<boolean>(false);
 
   // TAB 4: Calendly-Style Interview Slots State
   const [slotDomain, setSlotDomain] = useState<string>("TECHNICAL");
@@ -103,7 +100,6 @@ export default function AdminPortal() {
     }
   };
 
-  // Restore token & session from localStorage on load
   useEffect(() => {
     const savedToken = localStorage.getItem("admin_token");
     if (savedToken) {
@@ -128,7 +124,6 @@ export default function AdminPortal() {
     }
   }, []);
 
-  // Auth Handler (/login and /setup)
   const handleAuth = async (endpoint: "/login" | "/setup") => {
     if (!authEmail.trim() || !authPassword) {
       notify("error", "Please enter both email and password.");
@@ -175,7 +170,7 @@ export default function AdminPortal() {
   };
 
   // ============================================================================
-  // TAB 1: FORM QUESTIONS & SUBSECTIONS (Strict Domain Filtering + Edit/Delete)
+  // TAB 1: FORM QUESTIONS & SUBSECTIONS
   // ============================================================================
   const fetchFormQuestions = async (dom = questionDomain) => {
     if (!token) return;
@@ -189,12 +184,8 @@ export default function AdminPortal() {
       const rawSubs = json.data?.subsections || [];
       const rawQs = json.data?.questions || [];
 
-      setSubsectionsList(
-        rawSubs.filter((s: any) => !s.domain || s.domain === dom)
-      );
-      setQuestionsList(
-        rawQs.filter((q: any) => !q.domain || q.domain === dom)
-      );
+      setSubsectionsList(rawSubs.filter((s: any) => !s.domain || s.domain === dom));
+      setQuestionsList(rawQs.filter((q: any) => !q.domain || q.domain === dom));
     } catch (err: any) {
       notify("error", err.message);
     }
@@ -311,7 +302,7 @@ export default function AdminPortal() {
   };
 
   // ============================================================================
-  // TAB 2: CANDIDATES & REVIEW 1 (Pill Toggle + Batch Send + Excel Export)
+  // TAB 2: REVIEW 1
   // ============================================================================
   const fetchCandidates = async (dom = filterDomain) => {
     if (!token) return;
@@ -336,7 +327,6 @@ export default function AdminPortal() {
   const handleSelectCandidate = async (app: any) => {
     setSelectedApp(app);
     setReviewComments(app.review1Comments || "");
-    // Strictly false initially unless explicitly toggled ON (review1Passed === true)
     setIsShortlistedToggle(Boolean(app.review1Passed));
 
     let answersList = app.user?.answers || [];
@@ -361,9 +351,7 @@ export default function AdminPortal() {
 
     const scores: Record<string, number> = {};
     answersList
-      .filter(
-        (ans: any) => !ans.question?.domain || ans.question.domain === app.domain
-      )
+      .filter((ans: any) => !ans.question?.domain || ans.question.domain === app.domain)
       .forEach((ans: any) => {
         scores[ans.id] = ans.marks ?? 0;
       });
@@ -375,7 +363,6 @@ export default function AdminPortal() {
     0
   );
 
-  // Review 1: Search candidates and sort by highest Review 1 marks
   const displayedCandidates = [...candidates]
     .filter((app) => {
       const search = candidateSearch.trim().toLowerCase();
@@ -388,7 +375,6 @@ export default function AdminPortal() {
     })
     .sort((a, b) => (Number(b.review1Marks) || 0) - (Number(a.review1Marks) || 0));
 
-  // Save Review 1 Evaluation
   const saveReview1Data = async (nextToggleState: boolean) => {
     if (!selectedApp || !token) return;
     try {
@@ -439,7 +425,6 @@ export default function AdminPortal() {
     }
   };
 
-  // Batch Release Shortlist & Send Emails All Together
   const handleBatchReleaseShortlist = async () => {
     if (!token) return;
     const targetDom =
@@ -464,18 +449,13 @@ export default function AdminPortal() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.message || "Batch release failed");
 
-      notify(
-        "success",
-        json.message ||
-          "Shortlist released and emails sent to all shortlisted candidates!"
-      );
+      notify("success", json.message || "Shortlist released and emails sent to all shortlisted candidates!");
       fetchCandidates(filterDomain);
     } catch (err: any) {
       notify("error", err.message);
     }
   };
 
-  // Export All Candidate Form Answers, Marks, Comments & Selection Status to Excel (.CSV)
   const handleExportExcel = () => {
     if (candidates.length === 0) {
       notify("error", "No candidate data to export.");
@@ -560,27 +540,20 @@ export default function AdminPortal() {
           (a: any) => (a.questionId || a.question?.id || a.id) === qId
         );
         row.push(found ? found.text : "");
-        row.push(
-          found && found.marks !== null && found.marks !== undefined
-            ? found.marks
-            : 0
-        );
+        row.push(found && found.marks !== null && found.marks !== undefined ? found.marks : 0);
       });
 
       return row.map(escapeCsv).join(",");
     });
 
-    const csvContent =
-      "\uFEFF" + [headers.map(escapeCsv).join(","), ...rows].join("\n");
+    const csvContent = "\uFEFF" + [headers.map(escapeCsv).join(","), ...rows].join("\n");
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
     link.setAttribute(
       "download",
-      `Recruitment_${filterDomain}_Evaluation_${new Date()
-        .toISOString()
-        .slice(0, 10)}.csv`
+      `Recruitment_${filterDomain}_Evaluation_${new Date().toISOString().slice(0, 10)}.csv`
     );
     document.body.appendChild(link);
     link.click();
@@ -588,15 +561,14 @@ export default function AdminPortal() {
   };
 
   // ============================================================================
-  // TAB 3: REVIEW 2 (ONLY CANDIDATES WHO HAVE ACTUALLY BOOKED A SLOT)
+  // TAB 3: REVIEW 2 (TOGGLE SWITCH FOR SELECTED/REJECTED)
   // ============================================================================
   const handleSelectInterviewCandidate = (app: any) => {
     setSelectedInterviewApp(app);
     setReview2Marks(app.review2Marks ?? 0);
     setReview2Comments(app.review2Comments || "");
-    setReview2StageDecision(
-      REVIEW2_ALLOWED_STAGES.includes(app.stage) ? app.stage : "SELECTED"
-    );
+    // Default to false, true only if they are officially SELECTED
+    setIsFinalSelectedToggle(app.stage === "SELECTED");
   };
 
   const interviewCandidates = [...candidates]
@@ -628,8 +600,12 @@ export default function AdminPortal() {
       return timeA - timeB;
     });
 
-  const handleSaveReview2 = async () => {
+  const handleSaveReview2 = async (nextToggleState: boolean) => {
     if (!selectedInterviewApp || !token) return;
+    
+    // Convert boolean toggle to stage string purely for saving
+    const targetStage = nextToggleState ? "SELECTED" : "REJECTED";
+
     try {
       const res = await fetch(
         `${API_BASE}/applicants/${selectedInterviewApp.id}/review`,
@@ -640,10 +616,10 @@ export default function AdminPortal() {
             Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify({
-            stage: review2StageDecision,
+            stage: targetStage,
             review2Marks: Number(review2Marks) || 0,
             review2Comments: review2Comments,
-            review2Passed: review2StageDecision === "SELECTED",
+            review2Passed: nextToggleState, // Strictly matches the toggle
           }),
         }
       );
@@ -652,14 +628,11 @@ export default function AdminPortal() {
       if (!res.ok)
         throw new Error(json.message || "Failed to save interview evaluation");
 
-      notify(
-        "success",
-        `Interview evaluation saved! Candidate marked as ${review2StageDecision}.`
-      );
+      notify("success", `Saved! Candidate marked as ${targetStage}.`);
       fetchCandidates(filterDomain);
       setSelectedInterviewApp({
         ...selectedInterviewApp,
-        stage: review2StageDecision,
+        stage: targetStage,
         review2Marks: Number(review2Marks) || 0,
         review2Comments,
       });
@@ -674,8 +647,7 @@ export default function AdminPortal() {
   const fetchSlots = async (dom = slotDomain) => {
     if (!token || !adminUser?.id) return;
     try {
-      const targetAdminId =
-        adminUser.role === "ROOT_ADMIN" ? "ALL" : adminUser.id;
+      const targetAdminId = adminUser.role === "ROOT_ADMIN" ? "ALL" : adminUser.id;
       const res = await fetch(
         `${API_BASE}/schedule/${targetAdminId}?all=true&domain=${dom}`,
         {
@@ -693,10 +665,7 @@ export default function AdminPortal() {
   const handleCreateSlots = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!token || !slotDate || !slotStartTime || !slotEndTime) {
-      notify(
-        "error",
-        "Please select a calendar date, start time, and end time."
-      );
+      notify("error", "Please select a calendar date, start time, and end time.");
       return;
     }
 
@@ -734,8 +703,25 @@ export default function AdminPortal() {
     }
   };
 
+  const handleDeleteSlot = async (slotId: string) => {
+    if (!confirm("Are you sure you want to delete this empty slot?")) return;
+    try {
+      const res = await fetch(`${API_BASE}/slots/${slotId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.message);
+      
+      notify("success", "Slot deleted successfully!");
+      fetchSlots(slotDomain);
+    } catch (err: any) {
+      notify("error", err.message);
+    }
+  };
+
   // ============================================================================
-  // TAB 5: ROOT ADMIN WHITELIST DOMAIN HEADS
+  // TAB 5: ROOT ADMIN WHITELIST
   // ============================================================================
   const fetchDomainHeads = async () => {
     if (!token) return;
@@ -774,8 +760,7 @@ export default function AdminPortal() {
         }),
       });
       const json = await res.json();
-      if (!res.ok)
-        throw new Error(json.message || "Failed to assign domain heads");
+      if (!res.ok) throw new Error(json.message || "Failed to assign domain heads");
 
       setAssignEmails("");
       notify("success", json.message || "Domain head(s) whitelisted!");
@@ -1112,7 +1097,6 @@ export default function AdminPortal() {
                   </div>
                 </div>
 
-                {/* Right Side: Existing Questions List with Edit & Delete */}
                 <div className="lg:col-span-7 bg-white p-5 rounded-xl shadow-sm border border-slate-200">
                   <div className="flex justify-between items-center mb-4">
                     <h2 className="font-bold text-base">
@@ -1277,7 +1261,6 @@ export default function AdminPortal() {
             {/* ===================================================================== */}
             {activeTab === "candidates" && (
               <div className="space-y-4">
-                {/* Batch Action & Export Bar */}
                 <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-wrap justify-between items-center gap-3">
                   <div>
                     <h2 className="text-sm font-bold text-slate-900">
@@ -1839,7 +1822,45 @@ export default function AdminPortal() {
                       )}
 
                       <div className="space-y-4 pt-3 border-t border-slate-200">
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        {/* Final Selection Switch (Replacing Dropdown) */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-center">
+                          <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 flex items-center justify-between">
+                            <div>
+                              <span className="block text-xs font-bold text-slate-800">
+                                Final Selection Decision
+                              </span>
+                              <span className="text-[11px] text-slate-500">
+                                {isFinalSelectedToggle
+                                  ? "Candidate is SELECTED"
+                                  : "Candidate is REJECTED"}
+                              </span>
+                            </div>
+
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={isFinalSelectedToggle}
+                              onClick={() => {
+                                const nextVal = !isFinalSelectedToggle;
+                                setIsFinalSelectedToggle(nextVal);
+                                handleSaveReview2(nextVal);
+                              }}
+                              className={`relative inline-flex h-8 w-14 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                                isFinalSelectedToggle
+                                  ? "bg-emerald-500"
+                                  : "bg-slate-300"
+                              }`}
+                            >
+                              <span
+                                className={`pointer-events-none inline-block h-7 w-7 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
+                                  isFinalSelectedToggle
+                                    ? "translate-x-6"
+                                    : "translate-x-0"
+                                }`}
+                              />
+                            </button>
+                          </div>
+
                           <div>
                             <label className="block text-xs font-semibold text-slate-700 mb-1">
                               Interview Marks (Review 2 Score)
@@ -1854,25 +1875,6 @@ export default function AdminPortal() {
                               }
                               className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs font-semibold"
                             />
-                          </div>
-
-                          <div>
-                            <label className="block text-xs font-semibold text-slate-700 mb-1">
-                              Final Selection Decision
-                            </label>
-                            <select
-                              value={review2StageDecision}
-                              onChange={(e) =>
-                                setReview2StageDecision(e.target.value)
-                              }
-                              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs font-semibold"
-                            >
-                              {REVIEW2_ALLOWED_STAGES.map((st) => (
-                                <option key={st} value={st}>
-                                  {st}
-                                </option>
-                              ))}
-                            </select>
                           </div>
                         </div>
 
@@ -1890,10 +1892,10 @@ export default function AdminPortal() {
                         </div>
 
                         <button
-                          onClick={handleSaveReview2}
-                          className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-sm py-2.5 rounded-lg"
+                          onClick={() => handleSaveReview2(isFinalSelectedToggle)}
+                          className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm py-2.5 rounded-lg"
                         >
-                          Save Interview Marks & Finalize Decision
+                          Save Interview Marks & Final Decision
                         </button>
                       </div>
                     </div>
@@ -2078,15 +2080,26 @@ export default function AdminPortal() {
                               </p>
                             )}
                           </div>
-                          <span
-                            className={`text-xs font-semibold px-2.5 py-1 rounded shrink-0 ${
-                              s.bookedCount > 0
-                                ? "bg-emerald-100 text-emerald-800"
-                                : "bg-slate-100 text-slate-700"
-                            }`}
-                          >
-                            Booked: {s.bookedCount} / {s.capacity}
-                          </span>
+                          <div className="flex flex-col items-end gap-2 shrink-0">
+                            <span
+                              className={`text-xs font-semibold px-2.5 py-1 rounded ${
+                                s.bookedCount > 0
+                                  ? "bg-emerald-100 text-emerald-800"
+                                  : "bg-slate-100 text-slate-700"
+                              }`}
+                            >
+                              Booked: {s.bookedCount} / {s.capacity}
+                            </span>
+                            
+                            {s.bookedCount === 0 && (
+                              <button
+                                onClick={() => handleDeleteSlot(s.id)}
+                                className="text-[11px] font-semibold text-red-600 hover:text-red-700 hover:underline"
+                              >
+                                Delete Slot
+                              </button>
+                            )}
+                          </div>
                         </div>
                       ))
                     )}
@@ -2096,7 +2109,7 @@ export default function AdminPortal() {
             )}
 
             {/* ===================================================================== */}
-            {/* TAB 5: ROOT ADMIN WHITELIST & VIEW DOMAIN HEADS                       */}
+            {/* TAB 5: ROOT ADMIN WHITELIST                                           */}
             {/* ===================================================================== */}
             {activeTab === "root" && adminUser?.role === "ROOT_ADMIN" && (
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">

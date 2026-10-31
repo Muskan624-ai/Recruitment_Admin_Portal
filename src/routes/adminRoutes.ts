@@ -8,6 +8,7 @@ import {
   releaseShortlistBatch,
   createInterviewSlots,
   getMySchedule,
+  deleteInterviewSlot,
   assignDomainHead,
   getDomainHeads,
   createSubsection, 
@@ -33,9 +34,10 @@ router.get('/applicants/:id', authorizeRole(['DOMAIN_HEAD', 'ROOT_ADMIN']), getA
 router.put('/applicants/:applicationId/review', authorizeRole(['DOMAIN_HEAD', 'ROOT_ADMIN']), updateApplicantReview);
 router.post('/applicants/release-shortlist', authorizeRole(['DOMAIN_HEAD', 'ROOT_ADMIN']), releaseShortlistBatch);
 
-// Domain Heads create their slots and view their schedules
+// Domain Heads create, view, and delete their interview slots
 router.post('/slots', authorizeRole(['DOMAIN_HEAD', 'ROOT_ADMIN']), createInterviewSlots);
 router.get('/schedule/:adminId', authorizeRole(['DOMAIN_HEAD', 'ROOT_ADMIN']), getMySchedule);
+router.delete('/slots/:id', authorizeRole(['DOMAIN_HEAD', 'ROOT_ADMIN']), deleteInterviewSlot);
 
 // Domain Heads build, view, edit, and delete their domain's application form questions
 router.get('/form', authorizeRole(['DOMAIN_HEAD', 'ROOT_ADMIN']), getDomainForm);
