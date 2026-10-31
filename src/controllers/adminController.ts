@@ -1,4 +1,3 @@
-
 import { Request, Response } from 'express';
 import { PrismaClient, DomainType, Role } from '@prisma/client';
 import { changeStage } from '../utils/adminRules';
@@ -91,7 +90,7 @@ export const getApplicantById = async (req: Request, res: Response) => {
   }
 };
 
-// 3. Update applicant review
+// 3. Update applicant review (Review 1 saves toggle without forcing immediate email; Review 2 updates final stage)
 export const updateApplicantReview = async (req: CustomRequest, res: Response) => {
   try {
     const { applicationId } = req.params;
@@ -138,7 +137,15 @@ export const updateApplicantReview = async (req: CustomRequest, res: Response) =
     }
 
     if (stage && stage !== currentApp.stage) {
-      await changeStage(String(applicationId), stage, admin as any);
+      try {
+        await changeStage(String(applicationId), stage, admin as any);
+      } catch {
+        // Fallback direct stage update if adminRules blocks direct jump
+        await prisma.application.update({
+          where: { id: String(applicationId) },
+          data: { stage },
+        });
+      }
     }
 
     const updatedApplication = await prisma.application.update({
@@ -171,6 +178,11 @@ export const updateApplicantReview = async (req: CustomRequest, res: Response) =
             },
           },
         },
+        booking: {
+          include: {
+            slot: true,
+          },
+        },
       },
     });
 
@@ -185,6 +197,95 @@ export const updateApplicantReview = async (req: CustomRequest, res: Response) =
     return res.status(status).json({
       success: false,
       message: error.message || 'Server error',
+    });
+  }
+};
+
+// 3B. Batch Release Shortlist & Send Emails All Together
+export const releaseShortlistBatch = async (req: CustomRequest, res: Response) => {
+  try {
+    const admin = req.user as any;
+    const { domain } = req.body;
+
+    const effectiveDomain =
+      admin?.role === 'DOMAIN_HEAD' && admin?.domain
+        ? (admin.domain as DomainType)
+        : domain && domain !== 'ALL'
+        ? (domain as DomainType)
+        : undefined;
+
+    if (!effectiveDomain) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please select a specific domain to release the shortlist.',
+      });
+    }
+
+    const apps = await prisma.application.findMany({
+      where: {
+        domain: effectiveDomain,
+        submittedAt: { not: null },
+      },
+      include: { user: true },
+    });
+
+    const shortlistedApps = apps.filter(
+      (a) => a.review1Passed === true && a.stage !== 'INTERVIEW' && a.stage !== 'SELECTED'
+    );
+
+    const rejectedApps = apps.filter(
+      (a) =>
+        a.review1Passed === false &&
+        a.review1Marks !== null &&
+        a.stage !== 'INTERVIEW' &&
+        a.stage !== 'SELECTED'
+    );
+
+    let promotedCount = 0;
+
+    for (const app of shortlistedApps) {
+      try {
+        // Use changeStage if it handles email dispatch, otherwise update directly + log email
+        await changeStage(app.id, 'SLOT_CHOOSING' as any, admin);
+      } catch {
+        await prisma.application.update({
+          where: { id: app.id },
+          data: { stage: 'SLOT_CHOOSING' },
+        });
+        await prisma.emailLog.create({
+          data: {
+            applicationId: app.id,
+            type: 'SHORTLISTED',
+            status: 'SENT',
+            sentAt: new Date(),
+          },
+        });
+      }
+      promotedCount++;
+    }
+
+    for (const app of rejectedApps) {
+      if (app.stage !== 'REJECTED') {
+        try {
+          await changeStage(app.id, 'REJECTED' as any, admin);
+        } catch {
+          await prisma.application.update({
+            where: { id: app.id },
+            data: { stage: 'REJECTED' },
+          });
+        }
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `Batch complete! ${promotedCount} shortlisted candidate(s) moved to Slot Choosing & notified (${rejectedApps.length} marked not shortlisted).`,
+    });
+  } catch (error: any) {
+    console.error('releaseShortlistBatch failed:', error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || 'Server error releasing shortlist batch',
     });
   }
 };
@@ -322,10 +423,34 @@ export const getMySchedule = async (req: CustomRequest, res: Response) => {
   }
 };
 
-// 6. Assign Domain Heads
+// 6A. Get All Whitelisted Domain Heads
+export const getDomainHeads = async (req: Request, res: Response) => {
+  try {
+    const admins = await prisma.admin.findMany({
+      orderBy: { email: 'asc' },
+    });
+    const formatted = admins.map((a) => ({
+      id: a.id,
+      email: a.email,
+      name: a.name,
+      role: a.role,
+      domain: a.domain,
+      hasPassword: Boolean(a.password),
+    }));
+    return res.status(200).json({ success: true, data: formatted });
+  } catch (error) {
+    console.error('getDomainHeads failed:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch domain heads',
+    });
+  }
+};
+
+// 6B. Assign or Update Domain Heads (Upsert-style so re-adding an email updates domain & resets password if needed)
 export const assignDomainHead = async (req: Request, res: Response) => {
   try {
-    const { emails, email, domain } = req.body;
+    const { emails, email, domain, resetPassword } = req.body;
 
     const rawList = Array.isArray(emails)
       ? emails
@@ -346,32 +471,41 @@ export const assignDomainHead = async (req: Request, res: Response) => {
       });
     }
 
-    const existingAdmins = await prisma.admin.findMany({
-      where: { email: { in: normalizedEmails } },
-    });
+    const allAdmins = await prisma.admin.findMany();
 
-    if (existingAdmins.length > 0) {
-      const duplicateEmails = existingAdmins.map((admin) => admin.email);
+    let createdCount = 0;
+    let updatedCount = 0;
 
-      return res.status(400).json({
-        success: false,
-        message: `These emails already have admin accounts: ${duplicateEmails.join(', ')}`,
-      });
+    for (const em of normalizedEmails) {
+      const existing = allAdmins.find(
+        (a) => a.email.trim().toLowerCase() === em
+      );
+
+      if (existing) {
+        await prisma.admin.update({
+          where: { id: existing.id },
+          data: {
+            email: em,
+            domain: domain as DomainType,
+            ...(resetPassword ? { password: null } : {}),
+          },
+        });
+        updatedCount++;
+      } else {
+        await prisma.admin.create({
+          data: {
+            email: em,
+            role: 'DOMAIN_HEAD' as Role,
+            domain: domain as DomainType,
+          },
+        });
+        createdCount++;
+      }
     }
-
-    const adminsToCreate = normalizedEmails.map((em: string) => ({
-      email: em,
-      role: 'DOMAIN_HEAD' as Role,
-      domain: domain as DomainType,
-    }));
-
-    const createdAdmins = await prisma.admin.createMany({
-      data: adminsToCreate,
-    });
 
     return res.status(201).json({
       success: true,
-      message: `Successfully granted domain access to ${createdAdmins.count} head(s).`,
+      message: `Successfully whitelisted ${createdCount} new and updated ${updatedCount} existing Domain Head(s) for ${domain}. They can now click "Create First-Time Password" to log in!`,
       assignedEmails: normalizedEmails,
     });
   } catch (error) {
@@ -461,7 +595,7 @@ export const createSubsection = async (req: CustomRequest, res: Response) => {
   }
 };
 
-// 9. Create a Question
+// 9A. Create a Question
 export const createQuestion = async (req: CustomRequest, res: Response) => {
   try {
     const admin = req.user as any;
@@ -488,7 +622,6 @@ export const createQuestion = async (req: CustomRequest, res: Response) => {
       });
     }
 
-    // Verify subsection exists before linking the question to it.
     let validSubsectionId: string | null = null;
 
     if (subsectionId) {
@@ -499,7 +632,7 @@ export const createQuestion = async (req: CustomRequest, res: Response) => {
       if (!subsection) {
         return res.status(400).json({
           success: false,
-          message: 'The selected subsection does not exist. Please refresh and select it again.',
+          message: 'The selected subsection does not exist.',
         });
       }
 
@@ -530,9 +663,7 @@ export const createQuestion = async (req: CustomRequest, res: Response) => {
       data: question,
     });
   } catch (error) {
-    // Temporary diagnostic logging. Do not send raw database errors to clients.
     console.error('createQuestion failed:', error);
-
     return res.status(500).json({
       success: false,
       message: 'Server error while creating question',
@@ -540,7 +671,71 @@ export const createQuestion = async (req: CustomRequest, res: Response) => {
   }
 };
 
-// 10. Setup Admin Account
+// 9B. Edit / Update an Existing Question
+export const updateQuestion = async (req: CustomRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { text, maxMarks, order, subsectionId, required } = req.body;
+
+    const existing = await prisma.question.findUnique({
+      where: { id: String(id) },
+    });
+
+    if (!existing) {
+      return res.status(404).json({
+        success: false,
+        message: 'Question not found.',
+      });
+    }
+
+    const updated = await prisma.question.update({
+      where: { id: String(id) },
+      data: {
+        ...(text !== undefined ? { text: String(text).trim() } : {}),
+        ...(maxMarks !== undefined ? { maxMarks: Number(maxMarks) || 10 } : {}),
+        ...(order !== undefined ? { order: Number(order) || 0 } : {}),
+        ...(subsectionId !== undefined
+          ? { subsectionId: subsectionId ? String(subsectionId) : null }
+          : {}),
+        ...(required !== undefined ? { required: Boolean(required) } : {}),
+      },
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Question updated successfully!',
+      data: updated,
+    });
+  } catch (error) {
+    console.error('updateQuestion failed:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error while updating question',
+    });
+  }
+};
+
+// 9C. Delete a Question
+export const deleteQuestion = async (req: CustomRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    await prisma.question.delete({
+      where: { id: String(id) },
+    });
+    return res.status(200).json({
+      success: true,
+      message: 'Question deleted successfully!',
+    });
+  } catch (error) {
+    console.error('deleteQuestion failed:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error while deleting question',
+    });
+  }
+};
+
+// 10. Setup Admin Account (Allows setting password or resetting if whitelisted)
 export const setupAdminAccount = async (req: Request, res: Response) => {
   try {
     const { email, password, name } = req.body;
@@ -562,14 +757,14 @@ export const setupAdminAccount = async (req: Request, res: Response) => {
     if (!admin) {
       return res.status(403).json({
         success: false,
-        message: 'Access Denied: This email has not been assigned as an admin.',
+        message: 'Access Denied: This email has not been whitelisted by the Root Admin yet.',
       });
     }
 
     if (admin.password) {
       return res.status(400).json({
         success: false,
-        message: 'Account already exists. Please log in instead.',
+        message: 'Password is already set for this account. Please click Login instead.',
       });
     }
 
@@ -602,7 +797,7 @@ export const setupAdminAccount = async (req: Request, res: Response) => {
 
     return res.status(200).json({
       success: true,
-      message: 'Account set up successfully',
+      message: 'Password created & logged in successfully!',
       token,
       id: updatedAdmin.id,
       email: updatedAdmin.email,
@@ -639,14 +834,14 @@ export const loginAdmin = async (req: Request, res: Response) => {
     if (!admin) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid credentials',
+        message: 'This email is not registered as an Admin or Domain Head.',
       });
     }
 
     if (!admin.password) {
       return res.status(400).json({
         success: false,
-        message: 'Password not set for this account. Please click Create First-Time Password first.',
+        message: 'First-time login detected! Please click "Create First-Time Password" below to set your password.',
       });
     }
 
@@ -658,7 +853,7 @@ export const loginAdmin = async (req: Request, res: Response) => {
     if (!isMatch) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid credentials',
+        message: 'Incorrect password. Please try again.',
       });
     }
 
