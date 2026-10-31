@@ -2,10 +2,14 @@ import { Request, Response } from 'express';
 import { PrismaClient, DomainType, Role } from '@prisma/client';
 import { changeStage } from '../utils/adminRules';
 import { CustomRequest } from '../middleware/authMiddleware';
+import { sendShortlistEmail } from '../emailer';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 
 const prisma = new PrismaClient();
+
+// Helper delay to respect Gmail rate limits during batch sends (matches batchTest.js)
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // 1. Fetch all submitted applicants
 export const getAllApplicants = async (req: CustomRequest, res: Response) => {
@@ -44,6 +48,7 @@ export const getAllApplicants = async (req: CustomRequest, res: Response) => {
             },
           },
         },
+        emails: true,
       },
       orderBy: { user: { regNumber: 'asc' } },
     });
@@ -90,7 +95,7 @@ export const getApplicantById = async (req: Request, res: Response) => {
   }
 };
 
-// 3. Update applicant review (Review 1 saves toggle without forcing immediate email; Review 2 updates final stage)
+// 3. Update applicant review (Review 1 saves toggle & marks quietly; Review 2 updates final interview stage)
 export const updateApplicantReview = async (req: CustomRequest, res: Response) => {
   try {
     const { applicationId } = req.params;
@@ -140,7 +145,6 @@ export const updateApplicantReview = async (req: CustomRequest, res: Response) =
       try {
         await changeStage(String(applicationId), stage, admin as any);
       } catch {
-        // Fallback direct stage update if adminRules blocks direct jump
         await prisma.application.update({
           where: { id: String(applicationId) },
           data: { stage },
@@ -201,7 +205,7 @@ export const updateApplicantReview = async (req: CustomRequest, res: Response) =
   }
 };
 
-// 3B. Batch Release Shortlist & Send Emails All Together
+// 3B. Batch Release Shortlist & Send Real Emails via src/emailer/index.js
 export const releaseShortlistBatch = async (req: CustomRequest, res: Response) => {
   try {
     const admin = req.user as any;
@@ -226,13 +230,18 @@ export const releaseShortlistBatch = async (req: CustomRequest, res: Response) =
         domain: effectiveDomain,
         submittedAt: { not: null },
       },
-      include: { user: true },
+      include: {
+        user: true,
+        emails: true,
+      },
     });
 
+    // Candidates toggled ON (review1Passed === true)
     const shortlistedApps = apps.filter(
       (a) => a.review1Passed === true && a.stage !== 'INTERVIEW' && a.stage !== 'SELECTED'
     );
 
+    // Candidates toggled OFF who have been graded (review1Marks !== null)
     const rejectedApps = apps.filter(
       (a) =>
         a.review1Passed === false &&
@@ -241,45 +250,111 @@ export const releaseShortlistBatch = async (req: CustomRequest, res: Response) =
         a.stage !== 'SELECTED'
     );
 
-    let promotedCount = 0;
+    let shortlistEmailsSent = 0;
+    let rejectionEmailsSent = 0;
+    let emailFailures = 0;
 
+    // 1. Process Shortlisted Candidates -> Move to SLOT_CHOOSING & Send Shortlist Email
     for (const app of shortlistedApps) {
-      try {
-        // Use changeStage if it handles email dispatch, otherwise update directly + log email
-        await changeStage(app.id, 'SLOT_CHOOSING' as any, admin);
-      } catch {
+      if (app.stage !== 'SLOT_CHOOSING') {
         await prisma.application.update({
           where: { id: app.id },
           data: { stage: 'SLOT_CHOOSING' },
         });
-        await prisma.emailLog.create({
-          data: {
-            applicationId: app.id,
-            type: 'SHORTLISTED',
-            status: 'SENT',
-            sentAt: new Date(),
-          },
-        });
       }
-      promotedCount++;
+
+      const alreadySent = app.emails?.some(
+        (e) => e.type === 'SHORTLISTED' && e.status === 'SENT'
+      );
+
+      if (!alreadySent && app.user?.email) {
+        try {
+          await sendShortlistEmail({
+            name: app.user.name || 'Candidate',
+            email: app.user.email,
+            shortlisted: true,
+          });
+
+          await prisma.emailLog.create({
+            data: {
+              applicationId: app.id,
+              type: 'SHORTLISTED',
+              status: 'SENT',
+              attempts: 1,
+              sentAt: new Date(),
+            },
+          });
+          shortlistEmailsSent++;
+          await sleep(600);
+        } catch (err: any) {
+          console.error(`Failed to send shortlist email to ${app.user.email}:`, err.message);
+          await prisma.emailLog.create({
+            data: {
+              applicationId: app.id,
+              type: 'SHORTLISTED',
+              status: 'FAILED',
+              attempts: 1,
+              error: err.message,
+            },
+          });
+          emailFailures++;
+        }
+      }
     }
 
+    // 2. Process Non-Shortlisted Graded Candidates -> Move to REJECTED & Send Polite Rejection Email
     for (const app of rejectedApps) {
       if (app.stage !== 'REJECTED') {
+        await prisma.application.update({
+          where: { id: app.id },
+          data: { stage: 'REJECTED' },
+        });
+      }
+
+      const alreadySent = app.emails?.some(
+        (e) => e.type === 'REJECTED' && e.status === 'SENT'
+      );
+
+      if (!alreadySent && app.user?.email) {
         try {
-          await changeStage(app.id, 'REJECTED' as any, admin);
-        } catch {
-          await prisma.application.update({
-            where: { id: app.id },
-            data: { stage: 'REJECTED' },
+          await sendShortlistEmail({
+            name: app.user.name || 'Candidate',
+            email: app.user.email,
+            shortlisted: false,
           });
+
+          await prisma.emailLog.create({
+            data: {
+              applicationId: app.id,
+              type: 'REJECTED',
+              status: 'SENT',
+              attempts: 1,
+              sentAt: new Date(),
+            },
+          });
+          rejectionEmailsSent++;
+          await sleep(600);
+        } catch (err: any) {
+          console.error(`Failed to send rejection email to ${app.user.email}:`, err.message);
+          await prisma.emailLog.create({
+            data: {
+              applicationId: app.id,
+              type: 'REJECTED',
+              status: 'FAILED',
+              attempts: 1,
+              error: err.message,
+            },
+          });
+          emailFailures++;
         }
       }
     }
 
     return res.status(200).json({
       success: true,
-      message: `Batch complete! ${promotedCount} shortlisted candidate(s) moved to Slot Choosing & notified (${rejectedApps.length} marked not shortlisted).`,
+      message: `Batch complete! ${shortlistedApps.length} moved to Slot Choosing (${shortlistEmailsSent} invite emails sent), ${rejectedApps.length} rejected (${rejectionEmailsSent} rejection emails sent)${
+        emailFailures > 0 ? ` — ${emailFailures} email(s) failed (check EMAIL_USER/EMAIL_APP_PASSWORD in .env)` : ''
+      }.`,
     });
   } catch (error: any) {
     console.error('releaseShortlistBatch failed:', error);
@@ -447,10 +522,10 @@ export const getDomainHeads = async (req: Request, res: Response) => {
   }
 };
 
-// 6B. Assign or Update Domain Heads (Upsert-style so re-adding an email updates domain & resets password if needed)
+// 6B. Assign or Update Domain Heads
 export const assignDomainHead = async (req: Request, res: Response) => {
   try {
-    const { emails, email, domain, resetPassword } = req.body;
+    const { emails, email, domain } = req.body;
 
     const rawList = Array.isArray(emails)
       ? emails
@@ -487,7 +562,6 @@ export const assignDomainHead = async (req: Request, res: Response) => {
           data: {
             email: em,
             domain: domain as DomainType,
-            ...(resetPassword ? { password: null } : {}),
           },
         });
         updatedCount++;
@@ -505,7 +579,7 @@ export const assignDomainHead = async (req: Request, res: Response) => {
 
     return res.status(201).json({
       success: true,
-      message: `Successfully whitelisted ${createdCount} new and updated ${updatedCount} existing Domain Head(s) for ${domain}. They can now click "Create First-Time Password" to log in!`,
+      message: `Successfully whitelisted ${createdCount} new and updated ${updatedCount} existing Domain Head(s) for ${domain}.`,
       assignedEmails: normalizedEmails,
     });
   } catch (error) {
@@ -517,17 +591,17 @@ export const assignDomainHead = async (req: Request, res: Response) => {
   }
 };
 
-// 7. Get Domain Form Questions & Subsections
+// 7. Get Domain Form Questions & Subsections (Strict Domain Priority)
 export const getDomainForm = async (req: CustomRequest, res: Response) => {
   try {
     const admin = req.user as any;
     const queryDomain = req.query.domain as string | undefined;
 
     const effectiveDomain =
-      admin?.role === 'DOMAIN_HEAD' && admin?.domain
-        ? (admin.domain as DomainType)
-        : queryDomain && queryDomain !== 'ALL'
+      queryDomain && queryDomain !== 'ALL'
         ? (queryDomain as DomainType)
+        : admin?.domain
+        ? (admin.domain as DomainType)
         : undefined;
 
     const [subsections, questions] = await Promise.all([
@@ -562,9 +636,7 @@ export const createSubsection = async (req: CustomRequest, res: Response) => {
     const { name, domain, order } = req.body;
 
     const effectiveDomain = (
-      admin?.role === 'DOMAIN_HEAD' && admin?.domain
-        ? admin.domain
-        : domain
+      domain || admin?.domain
     ) as DomainType;
 
     if (!name || !effectiveDomain) {
@@ -610,9 +682,7 @@ export const createQuestion = async (req: CustomRequest, res: Response) => {
     } = req.body;
 
     const effectiveDomain = (
-      admin?.role === 'DOMAIN_HEAD' && admin?.domain
-        ? admin.domain
-        : domain
+      domain || admin?.domain
     ) as DomainType;
 
     if (!text || !effectiveDomain) {
@@ -735,7 +805,7 @@ export const deleteQuestion = async (req: CustomRequest, res: Response) => {
   }
 };
 
-// 10. Setup Admin Account (Allows setting password or resetting if whitelisted)
+// 10. Setup Admin Account
 export const setupAdminAccount = async (req: Request, res: Response) => {
   try {
     const { email, password, name } = req.body;

@@ -38,12 +38,12 @@ export default function AdminPortal() {
     text: string;
   } | null>(null);
 
-  // 1. Form Questions & Marks is now FIRST tab by default!
+  // 1. Form Questions & Marks is FIRST tab by default
   const [activeTab, setActiveTab] = useState<
     "questions" | "candidates" | "review2" | "slots" | "root"
   >("questions");
 
-  // TAB 1: Form Questions & Subsections State (with Inline Edit & Delete)
+  // TAB 1: Form Questions & Subsections State
   const [questionDomain, setQuestionDomain] = useState<string>("TECHNICAL");
   const [subsectionsList, setSubsectionsList] = useState<any[]>([]);
   const [questionsList, setQuestionsList] = useState<any[]>([]);
@@ -60,7 +60,7 @@ export default function AdminPortal() {
   const [editQuestionOrder, setEditQuestionOrder] = useState<number>(1);
   const [editQuestionSubsectionId, setEditQuestionSubsectionId] = useState<string>("");
 
-  // TAB 2: Candidates & Review 1 State (Toggle Shortlisted YES/NO + Batch Release)
+  // TAB 2: Candidates & Review 1 State
   const [filterDomain, setFilterDomain] = useState<string>("TECHNICAL");
   const [candidates, setCandidates] = useState<any[]>([]);
   const [candidateSearch, setCandidateSearch] = useState("");
@@ -88,7 +88,6 @@ export default function AdminPortal() {
   // TAB 5: Root Admin Whitelist State
   const [assignDomain, setAssignDomain] = useState<string>("TECHNICAL");
   const [assignEmails, setAssignEmails] = useState<string>("");
-  const [resetExistingPasswords, setResetExistingPasswords] = useState<boolean>(true);
   const [domainHeadsList, setDomainHeadsList] = useState<any[]>([]);
 
   const notify = (type: "success" | "error", text: string) => {
@@ -176,7 +175,7 @@ export default function AdminPortal() {
   };
 
   // ============================================================================
-  // TAB 1: FORM QUESTIONS & SUBSECTIONS (Create, Edit, Delete)
+  // TAB 1: FORM QUESTIONS & SUBSECTIONS (Strict Domain Filtering + Edit/Delete)
   // ============================================================================
   const fetchFormQuestions = async (dom = questionDomain) => {
     if (!token) return;
@@ -187,8 +186,15 @@ export default function AdminPortal() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.message || "Failed to fetch questions");
 
-      setSubsectionsList(json.data?.subsections || []);
-      setQuestionsList(json.data?.questions || []);
+      const rawSubs = json.data?.subsections || [];
+      const rawQs = json.data?.questions || [];
+
+      setSubsectionsList(
+        rawSubs.filter((s: any) => !s.domain || s.domain === dom)
+      );
+      setQuestionsList(
+        rawQs.filter((q: any) => !q.domain || q.domain === dom)
+      );
     } catch (err: any) {
       notify("error", err.message);
     }
@@ -214,7 +220,7 @@ export default function AdminPortal() {
       if (!res.ok) throw new Error(json.message || "Failed to create subsection");
 
       setNewSubsectionName("");
-      notify("success", "Form subsection created!");
+      notify("success", `Subsection created for ${questionDomain}!`);
       fetchFormQuestions(questionDomain);
     } catch (err: any) {
       notify("error", err.message);
@@ -245,7 +251,7 @@ export default function AdminPortal() {
 
       setNewQuestionText("");
       setNewQuestionOrder((prev) => prev + 1);
-      notify("success", "Question & marks added to domain form!");
+      notify("success", `Question added to ${questionDomain} form!`);
       fetchFormQuestions(questionDomain);
     } catch (err: any) {
       notify("error", err.message);
@@ -305,7 +311,7 @@ export default function AdminPortal() {
   };
 
   // ============================================================================
-  // TAB 2: CANDIDATES & REVIEW 1 (Toggle Shortlisted + Batch Send + Excel Export)
+  // TAB 2: CANDIDATES & REVIEW 1 (Pill Toggle + Batch Send + Excel Export)
   // ============================================================================
   const fetchCandidates = async (dom = filterDomain) => {
     if (!token) return;
@@ -318,7 +324,9 @@ export default function AdminPortal() {
       if (!res.ok) throw new Error(json.message || "Failed to fetch applicants");
 
       const rawList = json.data || json.applicants || [];
-      const submittedOnly = rawList.filter((app: any) => Boolean(app.submittedAt));
+      const submittedOnly = rawList
+        .filter((app: any) => Boolean(app.submittedAt))
+        .filter((app: any) => dom === "ALL" || app.domain === dom);
       setCandidates(submittedOnly);
     } catch (err: any) {
       notify("error", err.message);
@@ -328,10 +336,8 @@ export default function AdminPortal() {
   const handleSelectCandidate = async (app: any) => {
     setSelectedApp(app);
     setReviewComments(app.review1Comments || "");
-    setIsShortlistedToggle(
-      Boolean(app.review1Passed) ||
-        ["SHORTLISTED", "SLOT_CHOOSING", "INTERVIEW", "SELECTED"].includes(app.stage)
-    );
+    // Strictly false initially unless explicitly toggled ON (review1Passed === true)
+    setIsShortlistedToggle(Boolean(app.review1Passed));
 
     let answersList = app.user?.answers || [];
 
@@ -382,8 +388,8 @@ export default function AdminPortal() {
     })
     .sort((a, b) => (Number(b.review1Marks) || 0) - (Number(a.review1Marks) || 0));
 
-  // Save Review 1 Evaluation (Only saves marks, comments, and Shortlisted Toggle — does NOT send email yet)
-  const handleSaveEvaluation = async () => {
+  // Save Review 1 Evaluation
+  const saveReview1Data = async (nextToggleState: boolean) => {
     if (!selectedApp || !token) return;
     try {
       const answerScores = Object.entries(questionScores).map(
@@ -393,6 +399,13 @@ export default function AdminPortal() {
         })
       );
 
+      const payload: any = {
+        review1Marks: totalCalculatedMarks,
+        review1Comments: reviewComments,
+        review1Passed: nextToggleState,
+        answerScores,
+      };
+
       const res = await fetch(
         `${API_BASE}/applicants/${selectedApp.id}/review`,
         {
@@ -401,12 +414,7 @@ export default function AdminPortal() {
             "Content-Type": "application/json",
             Authorization: `Bearer ${token}`,
           },
-          body: JSON.stringify({
-            review1Marks: totalCalculatedMarks,
-            review1Comments: reviewComments,
-            review1Passed: isShortlistedToggle,
-            answerScores,
-          }),
+          body: JSON.stringify(payload),
         }
       );
 
@@ -415,8 +423,8 @@ export default function AdminPortal() {
 
       notify(
         "success",
-        `Saved! Marked as ${
-          isShortlistedToggle ? "SHORTLISTED (Pending Batch Send)" : "NOT SHORTLISTED"
+        `Saved! Shortlist toggle is ${
+          nextToggleState ? "ON (Shortlisted)" : "OFF (Not Shortlisted)"
         }.`
       );
       fetchCandidates(filterDomain);
@@ -424,7 +432,7 @@ export default function AdminPortal() {
         ...selectedApp,
         review1Marks: totalCalculatedMarks,
         review1Comments: reviewComments,
-        review1Passed: isShortlistedToggle,
+        review1Passed: nextToggleState,
       });
     } catch (err: any) {
       notify("error", err.message);
@@ -456,7 +464,11 @@ export default function AdminPortal() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.message || "Batch release failed");
 
-      notify("success", json.message || "Shortlist released and emails sent to all shortlisted candidates!");
+      notify(
+        "success",
+        json.message ||
+          "Shortlist released and emails sent to all shortlisted candidates!"
+      );
       fetchCandidates(filterDomain);
     } catch (err: any) {
       notify("error", err.message);
@@ -470,7 +482,6 @@ export default function AdminPortal() {
       return;
     }
 
-    // Collect all unique questions across candidates in this domain
     const questionMap = new Map<string, string>();
     candidates.forEach((app) => {
       (app.user?.answers || []).forEach((ans: any) => {
@@ -492,13 +503,13 @@ export default function AdminPortal() {
       "Phone",
       "Domain",
       "Current Stage",
-      "Shortlisted for Next Round (Toggle)",
+      "Shortlisted for Next Round",
       "Review 1 Total Marks",
       "Review 1 Reviewer Comments",
       "Interview Booked Slot",
       "Review 2 Interview Marks",
       "Review 2 Interview Comments",
-      "Final Status (Selected / Not Selected)",
+      "Final Status",
     ];
 
     questionEntries.forEach(([, qText], idx) => {
@@ -523,7 +534,9 @@ export default function AdminPortal() {
           ? "SELECTED"
           : app.stage === "REJECTED"
           ? "REJECTED"
-          : "IN PROGRESS";
+          : app.review1Passed
+          ? "SHORTLISTED FOR INTERVIEW"
+          : "NOT SHORTLISTED";
 
       const row = [
         app.user?.name || "",
@@ -547,21 +560,27 @@ export default function AdminPortal() {
           (a: any) => (a.questionId || a.question?.id || a.id) === qId
         );
         row.push(found ? found.text : "");
-        row.push(found && found.marks !== null && found.marks !== undefined ? found.marks : 0);
+        row.push(
+          found && found.marks !== null && found.marks !== undefined
+            ? found.marks
+            : 0
+        );
       });
 
       return row.map(escapeCsv).join(",");
     });
 
-    // Add UTF-8 BOM (\uFEFF) so Microsoft Excel opens it with clean formatting
-    const csvContent = "\uFEFF" + [headers.map(escapeCsv).join(","), ...rows].join("\n");
+    const csvContent =
+      "\uFEFF" + [headers.map(escapeCsv).join(","), ...rows].join("\n");
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
     link.setAttribute(
       "download",
-      `Recruitment_${filterDomain}_Evaluation_${new Date().toISOString().slice(0, 10)}.csv`
+      `Recruitment_${filterDomain}_Evaluation_${new Date()
+        .toISOString()
+        .slice(0, 10)}.csv`
     );
     document.body.appendChild(link);
     link.click();
@@ -569,7 +588,7 @@ export default function AdminPortal() {
   };
 
   // ============================================================================
-  // TAB 3: REVIEW 2 (INTERVIEW EVALUATION)
+  // TAB 3: REVIEW 2 (ONLY CANDIDATES WHO HAVE ACTUALLY BOOKED A SLOT)
   // ============================================================================
   const handleSelectInterviewCandidate = (app: any) => {
     setSelectedInterviewApp(app);
@@ -582,11 +601,11 @@ export default function AdminPortal() {
 
   const interviewCandidates = [...candidates]
     .filter((app) => {
+      const hasBookedSlot = Boolean(app.booking?.slot);
+      if (!hasBookedSlot) return false;
+
       if (adminUser?.role === "ROOT_ADMIN") {
-        return (
-          ["SLOT_CHOOSING", "INTERVIEW", "SELECTED", "REJECTED"].includes(app.stage) ||
-          Boolean(app.booking)
-        );
+        return true;
       }
       return app.booking?.slot?.interviewerId === adminUser?.id;
     })
@@ -606,12 +625,7 @@ export default function AdminPortal() {
       const timeB = b.booking?.slot?.startTime
         ? new Date(b.booking.slot.startTime).getTime()
         : Infinity;
-      if (timeA !== timeB) return timeA - timeB;
-
-      return (
-        (Number(b.review2Marks) || Number(b.review1Marks) || 0) -
-        (Number(a.review2Marks) || Number(a.review1Marks) || 0)
-      );
+      return timeA - timeB;
     });
 
   const handleSaveReview2 = async () => {
@@ -635,9 +649,13 @@ export default function AdminPortal() {
       );
 
       const json = await res.json();
-      if (!res.ok) throw new Error(json.message || "Failed to save interview evaluation");
+      if (!res.ok)
+        throw new Error(json.message || "Failed to save interview evaluation");
 
-      notify("success", `Interview evaluation saved! Candidate marked as ${review2StageDecision}.`);
+      notify(
+        "success",
+        `Interview evaluation saved! Candidate marked as ${review2StageDecision}.`
+      );
       fetchCandidates(filterDomain);
       setSelectedInterviewApp({
         ...selectedInterviewApp,
@@ -675,7 +693,10 @@ export default function AdminPortal() {
   const handleCreateSlots = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!token || !slotDate || !slotStartTime || !slotEndTime) {
-      notify("error", "Please select a calendar date, start time, and end time.");
+      notify(
+        "error",
+        "Please select a calendar date, start time, and end time."
+      );
       return;
     }
 
@@ -750,11 +771,11 @@ export default function AdminPortal() {
         body: JSON.stringify({
           domain: assignDomain,
           emails: emailArray,
-          resetPassword: resetExistingPasswords,
         }),
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.message || "Failed to assign domain heads");
+      if (!res.ok)
+        throw new Error(json.message || "Failed to assign domain heads");
 
       setAssignEmails("");
       notify("success", json.message || "Domain head(s) whitelisted!");
@@ -774,7 +795,7 @@ export default function AdminPortal() {
     }
   }, [token]);
 
-  const shortlistedCount = candidates.filter((c) => c.review1Passed).length;
+  const shortlistedCount = candidates.filter((c) => Boolean(c.review1Passed)).length;
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 p-6">
@@ -875,7 +896,7 @@ export default function AdminPortal() {
               </div>
             )}
 
-            {/* Navigation Tabs (Forms & Questions is #1!) */}
+            {/* Navigation Tabs */}
             <div className="flex flex-wrap gap-2 border-b border-slate-200 pb-3">
               <button
                 onClick={() => {
@@ -951,7 +972,7 @@ export default function AdminPortal() {
             </div>
 
             {/* ===================================================================== */}
-            {/* TAB 1: DOMAIN FORM QUESTIONS & MARKS BUILDER (WITH EDIT & DELETE)     */}
+            {/* TAB 1: DOMAIN FORM QUESTIONS & MARKS BUILDER                          */}
             {/* ===================================================================== */}
             {activeTab === "questions" && (
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -973,8 +994,10 @@ export default function AdminPortal() {
                           <select
                             value={questionDomain}
                             onChange={(e) => {
-                              setQuestionDomain(e.target.value);
-                              fetchFormQuestions(e.target.value);
+                              const newDom = e.target.value;
+                              setQuestionDomain(newDom);
+                              setSelectedSubsectionId("");
+                              fetchFormQuestions(newDom);
                             }}
                             className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs"
                           >
@@ -1115,7 +1138,6 @@ export default function AdminPortal() {
                           className="p-4 rounded-lg border border-slate-200 bg-slate-50/40 space-y-3"
                         >
                           {editingQuestionId === q.id ? (
-                            /* INLINE EDIT QUESTION MODE */
                             <div className="space-y-3">
                               <div className="flex justify-between items-center">
                                 <span className="text-xs font-bold text-indigo-600">
@@ -1131,7 +1153,9 @@ export default function AdminPortal() {
                               <textarea
                                 rows={2}
                                 value={editQuestionText}
-                                onChange={(e) => setEditQuestionText(e.target.value)}
+                                onChange={(e) =>
+                                  setEditQuestionText(e.target.value)
+                                }
                                 className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs bg-white"
                               />
                               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
@@ -1144,7 +1168,9 @@ export default function AdminPortal() {
                                     min={1}
                                     value={editQuestionMarks}
                                     onChange={(e) =>
-                                      setEditQuestionMarks(Number(e.target.value))
+                                      setEditQuestionMarks(
+                                        Number(e.target.value)
+                                      )
                                     }
                                     className="w-full border border-slate-300 rounded px-2.5 py-1.5 text-xs bg-white"
                                   />
@@ -1158,7 +1184,9 @@ export default function AdminPortal() {
                                     min={1}
                                     value={editQuestionOrder}
                                     onChange={(e) =>
-                                      setEditQuestionOrder(Number(e.target.value))
+                                      setEditQuestionOrder(
+                                        Number(e.target.value)
+                                      )
                                     }
                                     className="w-full border border-slate-300 rounded px-2.5 py-1.5 text-xs bg-white"
                                   />
@@ -1170,7 +1198,9 @@ export default function AdminPortal() {
                                   <select
                                     value={editQuestionSubsectionId}
                                     onChange={(e) =>
-                                      setEditQuestionSubsectionId(e.target.value)
+                                      setEditQuestionSubsectionId(
+                                        e.target.value
+                                      )
                                     }
                                     className="w-full border border-slate-300 rounded px-2.5 py-1.5 text-xs bg-white"
                                   >
@@ -1199,7 +1229,6 @@ export default function AdminPortal() {
                               </div>
                             </div>
                           ) : (
-                            /* NORMAL QUESTION DISPLAY WITH EDIT & DELETE BUTTONS */
                             <div className="flex justify-between items-start gap-4">
                               <div>
                                 <div className="flex items-center gap-2">
@@ -1244,7 +1273,7 @@ export default function AdminPortal() {
             )}
 
             {/* ===================================================================== */}
-            {/* TAB 2: REVIEW 1 (FORM EVALUATION, TOGGLE, BATCH SEND & EXCEL EXPORT)  */}
+            {/* TAB 2: REVIEW 1 (FORM EVALUATION, PILL TOGGLE, BATCH SEND & EXCEL)    */}
             {/* ===================================================================== */}
             {activeTab === "candidates" && (
               <div className="space-y-4">
@@ -1252,10 +1281,10 @@ export default function AdminPortal() {
                 <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-wrap justify-between items-center gap-3">
                   <div>
                     <h2 className="text-sm font-bold text-slate-900">
-                      Review 1 Batch Actions & Spreadsheet Export
+                      Review 1 Actions & Excel Export
                     </h2>
                     <p className="text-xs text-slate-500">
-                      Grade candidates and toggle “Shortlisted for Next Round”. Emails won't go out until you click the batch release button.
+                      All candidates start as <strong>Not Shortlisted</strong>. Toggle the switch on candidates you want to shortlist, then click Release Shortlist to email everyone at once.
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2.5">
@@ -1304,6 +1333,7 @@ export default function AdminPortal() {
                           value={filterDomain}
                           onChange={(e) => {
                             setFilterDomain(e.target.value);
+                            setSelectedApp(null);
                             fetchCandidates(e.target.value);
                           }}
                           className="border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs"
@@ -1347,10 +1377,12 @@ export default function AdminPortal() {
                                 className={`text-[11px] font-semibold px-2 py-0.5 rounded ${
                                   app.review1Passed
                                     ? "bg-emerald-100 text-emerald-800"
-                                    : "bg-slate-100 text-slate-700"
+                                    : "bg-slate-100 text-slate-600"
                                 }`}
                               >
-                                {app.review1Passed ? "SHORTLISTED" : app.stage}
+                                {app.review1Passed
+                                  ? "SHORTLISTED"
+                                  : "NOT SHORTLISTED"}
                               </span>
                             </div>
                             <div className="mt-2 flex justify-between items-center text-xs text-slate-500">
@@ -1381,13 +1413,17 @@ export default function AdminPortal() {
                       <div className="space-y-5">
                         <div className="bg-slate-50 p-4 rounded-lg border border-slate-200 grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
                           <div>
-                            <span className="text-slate-400 block">Candidate Name</span>
+                            <span className="text-slate-400 block">
+                              Candidate Name
+                            </span>
                             <span className="font-semibold text-slate-800">
                               {selectedApp.user?.name}
                             </span>
                           </div>
                           <div>
-                            <span className="text-slate-400 block">Registration Number</span>
+                            <span className="text-slate-400 block">
+                              Registration Number
+                            </span>
                             <span className="font-semibold text-slate-800">
                               {selectedApp.user?.regNumber}
                             </span>
@@ -1405,16 +1441,30 @@ export default function AdminPortal() {
                             </span>
                           </div>
                           <div>
-                            <span className="text-slate-400 block">Current Stage</span>
-                            <span className="font-semibold text-slate-800">
-                              {selectedApp.stage}
+                            <span className="text-slate-400 block">
+                              Shortlist Status
+                            </span>
+                            <span
+                              className={`font-semibold ${
+                                isShortlistedToggle
+                                  ? "text-emerald-700"
+                                  : "text-slate-600"
+                              }`}
+                            >
+                              {isShortlistedToggle
+                                ? "Shortlisted"
+                                : "Not Shortlisted"}
                             </span>
                           </div>
                           <div>
-                            <span className="text-slate-400 block">Submitted On</span>
+                            <span className="text-slate-400 block">
+                              Submitted On
+                            </span>
                             <span className="font-semibold text-slate-800">
                               {selectedApp.submittedAt
-                                ? new Date(selectedApp.submittedAt).toLocaleDateString()
+                                ? new Date(
+                                    selectedApp.submittedAt
+                                  ).toLocaleDateString()
                                 : "Submitted"}
                             </span>
                           </div>
@@ -1454,7 +1504,8 @@ export default function AdminPortal() {
                                   >
                                     <div className="flex justify-between items-start gap-4">
                                       <p className="text-xs font-semibold text-slate-800">
-                                        Q{idx + 1}. {ans.question?.text || "Question"}
+                                        Q{idx + 1}.{" "}
+                                        {ans.question?.text || "Question"}
                                       </p>
                                       <div className="flex items-center gap-1.5 shrink-0">
                                         <label className="text-[11px] text-slate-500">
@@ -1487,39 +1538,44 @@ export default function AdminPortal() {
                           )}
                         </div>
 
-                        {/* Toggle: Shortlisted for Next Round or Not */}
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-3 border-t border-slate-200">
-                          <div>
-                            <label className="block text-xs font-semibold text-slate-700 mb-2">
-                              Shortlisted for Next Round?
-                            </label>
-                            <div className="flex gap-2">
-                              <button
-                                type="button"
-                                onClick={() => setIsShortlistedToggle(true)}
-                                className={`flex-1 py-2.5 px-3 rounded-lg text-xs font-bold border transition ${
-                                  isShortlistedToggle
-                                    ? "bg-emerald-600 text-white border-emerald-600 shadow-sm"
-                                    : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50"
-                                }`}
-                              >
-                                YES — Shortlist
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setIsShortlistedToggle(false)}
-                                className={`flex-1 py-2.5 px-3 rounded-lg text-xs font-bold border transition ${
-                                  !isShortlistedToggle
-                                    ? "bg-red-600 text-white border-red-600 shadow-sm"
-                                    : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50"
-                                }`}
-                              >
-                                NO — Not Shortlisted
-                              </button>
+                        {/* SLIDING PILL TOGGLE SWITCH (iOS-Style Green/Gray Switch) */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4 border-t border-slate-200 items-center">
+                          <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 flex items-center justify-between">
+                            <div>
+                              <span className="block text-xs font-bold text-slate-800">
+                                Shortlist for Interview Round
+                              </span>
+                              <span className="text-[11px] text-slate-500">
+                                {isShortlistedToggle
+                                  ? "Shortlisted (Can book slot)"
+                                  : "Not Shortlisted"}
+                              </span>
                             </div>
-                            <p className="text-[11px] text-slate-400 mt-1.5">
-                              If shortlisted, the candidate will be able to choose an interview slot once you click the batch release button above.
-                            </p>
+
+                            {/* Green Pill Toggle Switch */}
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={isShortlistedToggle}
+                              onClick={() => {
+                                const nextVal = !isShortlistedToggle;
+                                setIsShortlistedToggle(nextVal);
+                                saveReview1Data(nextVal);
+                              }}
+                              className={`relative inline-flex h-8 w-14 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                                isShortlistedToggle
+                                  ? "bg-emerald-500"
+                                  : "bg-slate-300"
+                              }`}
+                            >
+                              <span
+                                className={`pointer-events-none inline-block h-7 w-7 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
+                                  isShortlistedToggle
+                                    ? "translate-x-6"
+                                    : "translate-x-0"
+                                }`}
+                              />
+                            </button>
                           </div>
 
                           <div>
@@ -1537,10 +1593,10 @@ export default function AdminPortal() {
                         </div>
 
                         <button
-                          onClick={handleSaveEvaluation}
+                          onClick={() => saveReview1Data(isShortlistedToggle)}
                           className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm py-2.5 rounded-lg"
                         >
-                          Save Marks & Shortlist Toggle (Does Not Send Email Yet)
+                          Save Marks & Comments
                         </button>
                       </div>
                     )}
@@ -1550,7 +1606,7 @@ export default function AdminPortal() {
             )}
 
             {/* ===================================================================== */}
-            {/* TAB 3: REVIEW 2 (MY INTERVIEWEES & FINAL SELECTION)                   */}
+            {/* TAB 3: REVIEW 2 (ONLY CANDIDATES WHO PICKED A SLOT)                   */}
             {/* ===================================================================== */}
             {activeTab === "review2" && (
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -1558,7 +1614,7 @@ export default function AdminPortal() {
                   <div className="flex justify-between items-center">
                     <h2 className="font-bold text-base">
                       {adminUser?.role === "ROOT_ADMIN"
-                        ? "All Interview Candidates"
+                        ? "Booked Interviewees (All)"
                         : "My Booked Interviewees"}
                     </h2>
                     <button
@@ -1571,7 +1627,7 @@ export default function AdminPortal() {
 
                   <input
                     type="text"
-                    placeholder="Search your interviewees..."
+                    placeholder="Search booked interviewees..."
                     value={review2Search}
                     onChange={(e) => setReview2Search(e.target.value)}
                     className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
@@ -1584,6 +1640,7 @@ export default function AdminPortal() {
                         value={filterDomain}
                         onChange={(e) => {
                           setFilterDomain(e.target.value);
+                          setSelectedInterviewApp(null);
                           fetchCandidates(e.target.value);
                         }}
                         className="border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs"
@@ -1601,9 +1658,7 @@ export default function AdminPortal() {
                   <div className="space-y-2 max-h-[550px] overflow-y-auto">
                     {interviewCandidates.length === 0 ? (
                       <p className="text-xs text-slate-500 py-8 text-center">
-                        {adminUser?.role === "ROOT_ADMIN"
-                          ? "No candidates have been moved to SLOT_CHOOSING or INTERVIEW yet."
-                          : "No candidates have booked your interview slots yet."}
+                        No candidates have booked an interview slot yet.
                       </p>
                     ) : (
                       interviewCandidates.map((app) => (
@@ -1640,18 +1695,19 @@ export default function AdminPortal() {
                             </span>
                           </div>
 
-                          {app.booking?.slot ? (
+                          {app.booking?.slot && (
                             <div className="mt-2 text-[11px] bg-emerald-50 text-emerald-800 px-2.5 py-1 rounded border border-emerald-200 font-medium">
                               Slot Booked:{" "}
-                              {new Date(app.booking.slot.startTime).toLocaleDateString()} at{" "}
-                              {new Date(app.booking.slot.startTime).toLocaleTimeString([], {
+                              {new Date(
+                                app.booking.slot.startTime
+                              ).toLocaleDateString()}{" "}
+                              at{" "}
+                              {new Date(
+                                app.booking.slot.startTime
+                              ).toLocaleTimeString([], {
                                 hour: "2-digit",
                                 minute: "2-digit",
                               })}
-                            </div>
-                          ) : (
-                            <div className="mt-2 text-[11px] text-amber-600 font-medium">
-                              Waiting for candidate to book a slot...
                             </div>
                           )}
 
@@ -1678,19 +1734,23 @@ export default function AdminPortal() {
 
                   {!selectedInterviewApp ? (
                     <p className="text-xs text-slate-500 py-12 text-center">
-                      Select a candidate on the left to view their booked slot, conduct their interview, and enter final marks.
+                      Select a booked candidate on the left to view their slot, conduct their interview, and enter final marks.
                     </p>
                   ) : (
                     <div className="space-y-5">
                       <div className="bg-slate-50 p-4 rounded-lg border border-slate-200 grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
                         <div>
-                          <span className="text-slate-400 block">Candidate Name</span>
+                          <span className="text-slate-400 block">
+                            Candidate Name
+                          </span>
                           <span className="font-semibold text-slate-800">
                             {selectedInterviewApp.user?.name}
                           </span>
                         </div>
                         <div>
-                          <span className="text-slate-400 block">Registration Number</span>
+                          <span className="text-slate-400 block">
+                            Registration Number
+                          </span>
                           <span className="font-semibold text-slate-800">
                             {selectedInterviewApp.user?.regNumber}
                           </span>
@@ -1708,13 +1768,17 @@ export default function AdminPortal() {
                           </span>
                         </div>
                         <div>
-                          <span className="text-slate-400 block">Current Stage</span>
+                          <span className="text-slate-400 block">
+                            Current Stage
+                          </span>
                           <span className="font-semibold text-slate-800">
                             {selectedInterviewApp.stage}
                           </span>
                         </div>
                         <div>
-                          <span className="text-slate-400 block">Review 1 Score</span>
+                          <span className="text-slate-400 block">
+                            Review 1 Score
+                          </span>
                           <span className="font-semibold text-emerald-700">
                             {selectedInterviewApp.review1Marks ?? 0} Marks
                           </span>
@@ -1725,7 +1789,7 @@ export default function AdminPortal() {
                         <h3 className="text-xs font-bold text-indigo-900">
                           Booked Interview Slot
                         </h3>
-                        {selectedInterviewApp.booking?.slot ? (
+                        {selectedInterviewApp.booking?.slot && (
                           <div className="text-xs text-slate-700 space-y-1">
                             <p className="font-semibold">
                               {new Date(
@@ -1748,19 +1812,18 @@ export default function AdminPortal() {
                             </p>
                             {selectedInterviewApp.booking.slot.meetingLink && (
                               <a
-                                href={selectedInterviewApp.booking.slot.meetingLink}
+                                href={
+                                  selectedInterviewApp.booking.slot.meetingLink
+                                }
                                 target="_blank"
                                 rel="noreferrer"
                                 className="inline-block text-blue-600 font-semibold hover:underline"
                               >
-                                Join Meeting: {selectedInterviewApp.booking.slot.meetingLink}
+                                Join Meeting:{" "}
+                                {selectedInterviewApp.booking.slot.meetingLink}
                               </a>
                             )}
                           </div>
-                        ) : (
-                          <p className="text-xs text-slate-500 italic">
-                            This candidate has not booked an interview slot yet.
-                          </p>
                         )}
                       </div>
 
@@ -2074,24 +2137,15 @@ export default function AdminPortal() {
                         className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs"
                       />
                     </div>
-                    <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={resetExistingPasswords}
-                        onChange={(e) => setResetExistingPasswords(e.target.checked)}
-                      />
-                      Allow resetting first-time password if email already exists
-                    </label>
                     <button
                       type="submit"
                       className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs px-4 py-2.5 rounded-lg"
                     >
-                      Grant / Update Domain Head Access
+                      Grant Domain Head Access
                     </button>
                   </form>
                 </div>
 
-                {/* Right Panel: List of all whitelisted Domain Heads */}
                 <div className="lg:col-span-7 bg-white p-6 rounded-xl shadow-sm border border-slate-200">
                   <div className="flex justify-between items-center mb-4">
                     <h2 className="font-bold text-base">
@@ -2111,9 +2165,12 @@ export default function AdminPortal() {
                         className="p-3 rounded-lg border border-slate-200 flex justify-between items-center text-xs"
                       >
                         <div>
-                          <p className="font-semibold text-slate-800">{adm.email}</p>
+                          <p className="font-semibold text-slate-800">
+                            {adm.email}
+                          </p>
                           <p className="text-slate-500">
-                            Role: {adm.role} {adm.domain ? `• Domain: ${adm.domain}` : ""}
+                            Role: {adm.role}{" "}
+                            {adm.domain ? `• Domain: ${adm.domain}` : ""}
                           </p>
                         </div>
                         <span
